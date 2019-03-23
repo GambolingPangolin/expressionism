@@ -25,7 +25,7 @@ newtype Name = Name { unName :: Text }
 
 -- | The type of Core expressions parameterized over binders
 data Expr a
-    = Var a
+    = Ident a
     | Nmbr Int
     | Constr Word64 Word64
     | Ap (Expr a) (Expr a)
@@ -40,9 +40,9 @@ type CoreExpr = Expr Name
 
 -- | Test if the expression is atomic: a var or a number literal
 isAtomic :: Expr a -> Bool
-isAtomic (Var _)  = True
-isAtomic (Nmbr _) = True
-isAtomic _        = False
+isAtomic (Ident _) = True
+isAtomic (Nmbr _)  = True
+isAtomic _         = False
 
 
 type CoreProgram = [ (Name, [Name], Expr Name) ]
@@ -50,18 +50,18 @@ type CoreProgram = [ (Name, [Name], Expr Name) ]
 
 preludeDefs :: CoreProgram
 preludeDefs =
-    [ ("I", ["x"], Var "x")
-    , ("K", ["x", "y"], Var "x")
-    , ("K1", ["x", "y"], Var "y")
-    , ("S", ["f", "g", "x"], (Var "f" `Ap` Var "x") `Ap` (Var "g" `Ap` Var "x"))
-    , ("compose", ["f", "g", "x"], Var "f" `Ap` (Var "g" `Ap` Var "x"))
-    , ("twice", ["f"], (Var "compose" `Ap` Var "f") `Ap` Var "f")
+    [ ("I", ["x"], Ident "x")
+    , ("K", ["x", "y"], Ident "x")
+    , ("K1", ["x", "y"], Ident "y")
+    , ("S", ["f", "g", "x"], (Ident "f" `Ap` Ident "x") `Ap` (Ident "g" `Ap` Ident "x"))
+    , ("compose", ["f", "g", "x"], Ident "f" `Ap` (Ident "g" `Ap` Ident "x"))
+    , ("twice", ["f"], (Ident "compose" `Ap` Ident "f") `Ap` Ident "f")
     ]
 
 
 -- | A simple pretty printer, which currently does not do indentation
 pretty :: Expr Name -> Text
-pretty (Var a) = unName a
+pretty (Ident a) = unName a
 pretty (Nmbr n) = T.pack $ show n
 pretty (Constr t i) = T.pack $ "Pack{" <> show t <> "," <> show i <> "}"
 pretty (Ap e1 e2) = pretty e1 <> " " <> pretty e2

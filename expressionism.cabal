@@ -20,6 +20,7 @@ library
     Expressionism
     Expressionism.Arithmetic
     Expressionism.Bool
+    Expressionism.Church
     Expressionism.GraphReducer
 
   build-depends:

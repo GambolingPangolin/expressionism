@@ -1,8 +1,10 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE LambdaCase                 #-}
+{-# LANGUAGE OverloadedStrings          #-}
 
 module Expressionism.GraphReducer where
 
+import           Data.List       (intercalate)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Word       (Word32, Word8)
@@ -22,7 +24,10 @@ data GOp
 
 
 newtype Addr = Addr Word32
-    deriving (Eq, Ord, Num, Show)
+    deriving (Eq, Ord, Num)
+
+instance Show Addr where
+    show (Addr w) = show w
 
 
 -- | Possible nodes that get allocated on the heap
@@ -30,7 +35,12 @@ data GNode
     = GNodeNum Int
     | GNodeAp Addr Addr
     | GNodeGlobal Word8 [GOp]
-    deriving (Eq, Show)
+    deriving Eq
+
+instance Show GNode where
+    show (GNodeNum i)        = "{{" <> show i <> "}}"
+    show (GNodeAp a b)       = "(" <> show a <> " " <> show b <> ")"
+    show (GNodeGlobal i ops) = "G(" <> show i <> ", " <> show ops <> ")"
 
 
 type Stack = [Addr]
@@ -44,7 +54,15 @@ data Machine
     , machineStack   :: Stack
     , machineHeap    :: Heap
     , machineGlobals :: Map Name Addr
-    } deriving (Eq, Show)
+    } deriving Eq
+
+instance Show Machine where
+    show m = intercalate "\n"
+        [ "Code: " <> show (machineCode m)
+        , "Stack: " <> show (machineStack m)
+        , "Heap: " <> (show . snd . machineHeap) m
+        , "Globals: " <> show (machineGlobals m)
+        ]
 
 
 pushStack :: Addr -> Machine -> Machine
@@ -118,14 +136,14 @@ compile :: CoreSC -> (Name, Word8, [GOp])
 compile (name, args, body) = (name, fromIntegral (length args), code)
     where
     positions = Map.fromList $ zip args [0..]
-    code = compileC positions body ++ [Slide (length args +1), Unwind]
+    code = compileC positions body ++ [Slide (length args + 1), Unwind]
 
 
 -- | Generate 'GOp' instructions from an expression
 compileC :: Map Name Int -> CoreExpr -> [GOp]
 compileC env = \case
     Ident x -> maybe [PushGlobal x] (pure . Push) $ Map.lookup x env
-    Ap x y -> compileC env x ++ compileC (shift env) y ++ [MkAp]
+    Ap x y -> compileC env y ++ compileC (shift env) x ++ [MkAp]
     Nmbr n -> [PushInt n]
 
     where

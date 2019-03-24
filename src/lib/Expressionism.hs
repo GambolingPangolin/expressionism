@@ -35,7 +35,7 @@ data Expr a
     | Let Bool [(a, Expr a)] (Expr a)
     | Case (Expr a) [(Word64, [a], Expr a)]
     | Lam [a] (Expr a)
-    deriving Eq
+    deriving (Eq, Show)
 
 
 type CoreExpr = Expr Name

@@ -4,6 +4,7 @@
 
 module Expressionism.GraphReducer where
 
+import           Data.Bifunctor  (second)
 import           Data.List       (intercalate)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -16,9 +17,11 @@ import           Expressionism   (CoreExpr, CoreProgram, CoreSC, Expr (..),
 data GOp
     = Slide Int
     | Unwind
+    | Update Int
     | PushGlobal Name
     | PushInt Int
     | Push Int
+    | Pop Int
     | MkAp
     deriving (Eq, Show)
 
@@ -35,12 +38,14 @@ data GNode
     = GNodeNum Int
     | GNodeAp Addr Addr
     | GNodeGlobal Word8 [GOp]
+    | GNodeInd Addr
     deriving Eq
 
 instance Show GNode where
     show (GNodeNum i)        = "{{" <> show i <> "}}"
     show (GNodeAp a b)       = "NAp " <> show a <> " " <> show b
     show (GNodeGlobal i ops) = "G." <> show i <> ": " <> show ops
+    show (GNodeInd a)        = "# " <> show a
 
 
 type Stack = [Addr]
@@ -83,6 +88,10 @@ allocate :: Heap -> GNode -> (Addr, Heap)
 allocate (a, h) g = (a, (a+1, Map.insert a g h))
 
 
+updateHeap :: Addr -> GNode -> Heap -> Heap
+updateHeap a n = second (Map.insert a n)
+
+
 emptyHeap :: Heap
 emptyHeap = (0, Map.empty)
 
@@ -104,13 +113,23 @@ machineStep m = case machineCode m of
 
     Unwind : ops -> case machineStack m of
         s@(a : as) -> case Map.lookup a . snd $ machineHeap m of
-            Just (GNodeNum n)         -> Right $ setCode [] m
-            Just (GNodeAp a1 _)       -> Right $ pushStack a1 m
+            Just (GNodeNum n) -> Right $ setCode [] m
+
+            Just (GNodeAp a1 _) -> Right $ pushStack a1 m
+
             Just (GNodeGlobal i ops')
-                | length as < fromIntegral i -> Left MissingArguments
-                | otherwise -> Right $ setCode (ops' ++ ops) m
+                | length as < fromIntegral i    -> Left MissingArguments
+                | otherwise                     -> Right $ setCode (ops' ++ ops) m
+
+            Just (GNodeInd a') -> Right $ m { machineStack = a' : as }
 
         _ -> Left StackUnderflow
+
+    Update n : ops ->
+        let an = as !! n
+            a : as = machineStack m
+            h = updateHeap an (GNodeInd a) $ machineHeap m
+        in Right . setCode ops $ m { machineStack = as, machineHeap = h }
 
     PushGlobal x : ops ->
         let g = Map.lookup x $ machineGlobals m
@@ -125,6 +144,9 @@ machineStep m = case machineCode m of
         let Just (GNodeAp _ a) = Map.lookup (ss !! n) . snd $ machineHeap m
             _ : ss = machineStack m
         in Right . pushStack a $ setCode ops m
+
+    Pop n : ops ->
+        Right $ m { machineStack = drop n (machineStack m), machineCode = ops }
 
     MkAp : ops ->
         case machineStack m of
@@ -141,8 +163,9 @@ machineStep m = case machineCode m of
 compile :: CoreSC -> (Name, Word8, [GOp])
 compile (name, args, body) = (name, fromIntegral (length args), code)
     where
+    d = length args
     positions = Map.fromList $ zip args [0..]
-    code = compileC positions body ++ [Slide (length args + 1), Unwind]
+    code = compileC positions body ++ [Update d, Pop d, Unwind]
 
 
 -- | Generate 'GOp' instructions from an expression
@@ -160,15 +183,14 @@ compileC env = \case
 initMachine :: CoreExpr -> CoreProgram -> Machine
 initMachine st defs
     = Machine
-    { machineCode = initialCode
+    { machineCode = [PushGlobal "main", Unwind]
     , machineStack = []
     , machineHeap = h0
     , machineGlobals = g
     }
 
     where
-    (_, _, initialCode) = compile ("main", [], st)
-    (h0, g) = foldl step (emptyHeap, Map.empty) defs
+    (h0, g) = foldl step (emptyHeap, Map.empty) $ ("main", [], st) : defs
     step (h, g) sc =
         let (name, i, code) = compile sc
             (a, h') = allocate h (GNodeGlobal i code)

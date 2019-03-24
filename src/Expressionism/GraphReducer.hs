@@ -74,8 +74,9 @@ pushStack :: Addr -> Machine -> Machine
 pushStack addr m = m { machineStack = addr : machineStack m }
 
 
-putOps :: [GOp] -> Machine -> Machine
-putOps ops m = m { machineCode = ops }
+setCode :: [GOp] -> Machine -> Machine
+setCode ops m = m { machineCode = ops }
+
 
 -- | Simplistic allocation function that uses the next available address
 allocate :: Heap -> GNode -> (Addr, Heap)
@@ -98,38 +99,38 @@ machineStep :: Machine -> Either MachineError Machine
 machineStep m = case machineCode m of
     Slide n : ops ->
         case machineStack m of
-            s : ss -> Right . putOps ops $ m { machineStack = s : drop n ss }
+            s : ss -> Right . setCode ops $ m { machineStack = s : drop n ss }
             _      -> Left StackUnderflow
 
     Unwind : ops -> case machineStack m of
         s@(a : as) -> case Map.lookup a . snd $ machineHeap m of
-            Just (GNodeNum n)         -> Right $ putOps [] m
+            Just (GNodeNum n)         -> Right $ setCode [] m
             Just (GNodeAp a1 _)       -> Right $ pushStack a1 m
             Just (GNodeGlobal i ops')
                 | length as < fromIntegral i -> Left MissingArguments
-                | otherwise -> Right $ putOps (ops' ++ ops) m
+                | otherwise -> Right $ setCode (ops' ++ ops) m
 
         _ -> Left StackUnderflow
 
     PushGlobal x : ops ->
         let g = Map.lookup x $ machineGlobals m
-            update a = pushStack a $ putOps ops m
+            update a = pushStack a $ setCode ops m
         in maybe (Left MissingGlobal) (Right . update) g
 
     PushInt x : ops    ->
         let (a, h) = allocate (machineHeap m) $ GNodeNum x in
-        Right . pushStack a . putOps ops $ m { machineHeap = h }
+        Right . pushStack a . setCode ops $ m { machineHeap = h }
 
     Push n : ops ->
         let Just (GNodeAp _ a) = Map.lookup (ss !! n) . snd $ machineHeap m
             _ : ss = machineStack m
-        in Right . pushStack a $ putOps ops m
+        in Right . pushStack a $ setCode ops m
 
     MkAp : ops ->
         case machineStack m of
             a1 : a2 : ss ->
                 let (a, h) = allocate (machineHeap m) $ GNodeAp a1 a2 in
-                Right . putOps ops $ m { machineStack = a : ss, machineHeap = h }
+                Right . setCode ops $ m { machineStack = a : ss, machineHeap = h }
 
             _ -> Left StackUnderflow
 

@@ -20,7 +20,10 @@ import           Data.Word   (Word64)
 
 
 newtype Name = Name { unName :: Text }
-    deriving (Eq, Ord, Show, IsString)
+    deriving (Eq, Ord, IsString)
+
+instance Show Name where
+    show = show . unName
 
 
 -- | The type of Core expressions parameterized over binders
@@ -65,7 +68,7 @@ pretty :: Expr Name -> Text
 pretty (Ident a) = unName a
 pretty (Nmbr n) = T.pack $ show n
 pretty (Constr t i) = T.pack $ "Pack{" <> show t <> "," <> show i <> "}"
-pretty (Ap e1 e2) = pretty e1 <> " " <> pretty e2
+pretty (Ap e1 e2) = "(" <> pretty e1 <> " " <> pretty e2 <> ")"
 pretty (Let isRec defs body) =
     bool "let" "letrec" isRec <> " " <> T.intercalate "; " (prettyDef <$> defs) <> "in " <> pretty body
     where

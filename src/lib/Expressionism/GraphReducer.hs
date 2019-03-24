@@ -1,11 +1,13 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE LambdaCase                 #-}
 
 module Expressionism.GraphReducer where
 
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Word       (Word32, Word8)
-import           Expressionism   (Expr (..), Name)
+import           Expressionism   (CoreExpr, CoreProgram, CoreSC, Expr (..),
+                                  Name)
 
 
 -- | Instructions for the G-Machine (Mark I)
@@ -69,8 +71,8 @@ data MachineError
     deriving (Eq, Show)
 
 
-step :: Machine -> Either MachineError Machine
-step m = case machineCode m of
+machineStep :: Machine -> Either MachineError Machine
+machineStep m = case machineCode m of
     Slide n : ops ->
         case machineStack m of
             s : ss -> Right . putOps ops $ m { machineStack = s : drop n ss }
@@ -109,3 +111,66 @@ step m = case machineCode m of
             _ -> Left StackUnderflow
 
     _ -> Left NoInstructions
+
+
+-- | Compile a supercombinator
+compile :: CoreSC -> (Name, Word8, [GOp])
+compile (name, args, body) = (name, fromIntegral (length args), code)
+    where
+    positions = Map.fromList $ zip args [0..]
+    code = compileC positions body ++ [Slide (length args +1), Unwind]
+
+
+-- | Generate 'GOp' instructions from an expression
+compileC :: Map Name Int -> CoreExpr -> [GOp]
+compileC env = \case
+    Ident x -> maybe [PushGlobal x] (pure . Push) $ Map.lookup x env
+    Ap x y -> compileC env x ++ compileC (shift env) y ++ [MkAp]
+    Nmbr n -> [PushInt n]
+
+    where
+    shift = fmap (+1)
+
+
+-- | Prepare the starting state of the machine
+initMachine :: CoreExpr -> CoreProgram -> Machine
+initMachine st defs
+    = Machine
+    { machineCode = initialCode
+    , machineStack = []
+    , machineHeap = h0
+    , machineGlobals = g
+    }
+
+    where
+    (_, _, initialCode) = compile ("main", [], st)
+    (h0, g) = foldl step (emptyHeap, Map.empty) defs
+    step (h, g) sc =
+        let (name, i, code) = compile sc
+            (a, h') = allocate h (GNodeGlobal i code)
+        in (h', Map.insert name a g)
+
+
+-- | Run a computation for up to the given number of steps
+execBounded :: Word32 -> Machine -> Either MachineError Machine
+execBounded n m = case machineStep m of
+    Right m'    | n > 0 -> execBounded (n-1) m'
+                | otherwise -> Right m'
+    Left NoInstructions -> Right m
+    x -> x
+
+
+-- | Extract the result from the machine if it
+--   1. has no remaining instructions and
+--   2. has an int on top of the stack
+result :: Machine -> Maybe Int
+result m
+    | null (machineCode m)
+    = case machineStack m of
+        a : _ -> case Map.lookup a . snd $ machineHeap m of
+            Just (GNodeNum n) -> Just n
+            _                 -> Nothing
+        _ -> Nothing
+
+    | otherwise
+    = Nothing

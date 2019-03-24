@@ -1,7 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import           Test.Tasty
-import           Test.Tasty.HUnit           (testCase, (@=?))
+import           Test.Tasty.HUnit           (testCase, (@?=))
 
 import           Expressionism              (Expr (..), Name, preludeDefs)
 import           Expressionism.Arithmetic   (AExpr (..))
@@ -28,26 +28,26 @@ retVal i = Right $ Just i
 preludeTests :: TestTree
 preludeTests = testGroup "prelude"
     [ testCase "I should compute the identity" $
-        runMachine0 (Ap (Ident "I") (Nmbr 1)) @=? retVal 1
+        runMachine0 (Ap (Ident "I") (Nmbr 1)) @?= retVal 1
 
     , testCase "K should project the first arg" $
-        runMachine0 (Ap (Ap (Ident "K") (Nmbr 1)) (Nmbr 2)) @=? retVal 1
+        runMachine0 (Ap (Ap (Ident "K") (Nmbr 1)) (Nmbr 2)) @?= retVal 1
 
     , testCase "K1 should project the second arg" $
-        runMachine0 (Ap (Ap (Ident "K1") (Nmbr 1)) (Nmbr 2)) @=? retVal 2
+        runMachine0 (Ap (Ap (Ident "K1") (Nmbr 1)) (Nmbr 2)) @?= retVal 2
 
     ]
 
 
 boolTests :: TestTree
 boolTests = testGroup "bool"
-    [ testCase "true" $ runMachineBool (B.toNumber B.true) @=? retTrue
-    , testCase "false" $ runMachineBool (B.toNumber B.false) @=? retFalse
-    , testCase "not false" $ runMachineBool (B.toNumber $ B.apNot B.false) @=? retTrue
-    , testCase "true and false" $ runMachineBool (B.toNumber $ B.true `B.apAnd` B.false) @=? retFalse
-    , testCase "true and true" $ runMachineBool (B.toNumber $ B.true `B.apAnd` B.true) @=? retTrue
-    , testCase "true or false" $ runMachineBool (B.toNumber $ B.true `B.apOr` B.false) @=? retTrue
-    , testCase "false or false" $ runMachineBool (B.toNumber $ B.false `B.apOr` B.false) @=? retFalse
+    [ testCase "true" $ runMachineBool (B.toNumber B.true) @?= retTrue
+    , testCase "false" $ runMachineBool (B.toNumber B.false) @?= retFalse
+    , testCase "not false" $ runMachineBool (B.toNumber $ B.apNot B.false) @?= retTrue
+    , testCase "true and false" $ runMachineBool (B.toNumber $ B.true `B.apAnd` B.false) @?= retFalse
+    , testCase "true and true" $ runMachineBool (B.toNumber $ B.true `B.apAnd` B.true) @?= retTrue
+    , testCase "true or false" $ runMachineBool (B.toNumber $ B.true `B.apOr` B.false) @?= retTrue
+    , testCase "false or false" $ runMachineBool (B.toNumber $ B.false `B.apOr` B.false) @?= retFalse
     ]
 
     where
@@ -57,11 +57,11 @@ boolTests = testGroup "bool"
 
 arithTests :: TestTree
 arithTests = testGroup "arithmetic"
-    [ testCase "interpret" $ A.interpret exprA @=? 20
-    , testCase "compile and run" $ A.run (A.compile exprA) @=? 20
+    [ testCase "interpret" $ A.interpret exprA @?= 20
+    , testCase "compile and run" $ A.run (A.compile exprA) @?= 20
     , testCase "let bindings" $ do
-        A.interpret exprB @=? 26
-        A.run (A.compile exprB) @=? 26
+        A.interpret exprB @?= 26
+        A.run (A.compile exprB) @?= 26
     ]
 
     where

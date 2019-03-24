@@ -124,7 +124,7 @@ machineStep m = case machineCode m of
         case machineStack m of
             a1 : a2 : ss ->
                 let (a, h) = allocate (machineHeap m) $ GNodeAp a1 a2 in
-                Right . pushStack a . putOps ops $ m { machineHeap = h }
+                Right . putOps ops $ m { machineStack = a : ss, machineHeap = h }
 
             _ -> Left StackUnderflow
 

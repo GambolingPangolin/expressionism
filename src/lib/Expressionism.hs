@@ -20,7 +20,7 @@ import           Data.Word   (Word64)
 
 
 newtype Name = Name { unName :: Text }
-    deriving (Eq, IsString)
+    deriving (Eq, Ord, Show, IsString)
 
 
 -- | The type of Core expressions parameterized over binders
@@ -45,7 +45,8 @@ isAtomic (Nmbr _)  = True
 isAtomic _         = False
 
 
-type CoreProgram = [ (Name, [Name], Expr Name) ]
+type CoreSC = (Name, [Name], Expr Name)
+type CoreProgram = [ CoreSC ]
 
 
 preludeDefs :: CoreProgram

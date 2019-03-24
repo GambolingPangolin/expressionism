@@ -19,6 +19,7 @@ library
   exposed-modules:
     Expressionism
     Expressionism.Arithmetic
+    Expressionism.GraphReducer
 
   build-depends:
       base >=4.12 && <4.13

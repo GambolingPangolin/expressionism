@@ -3,13 +3,16 @@
 import           Test.Tasty
 import           Test.Tasty.HUnit           (testCase, (@=?))
 
-import           Expressionism              (Expr (..), preludeDefs)
+import           Expressionism              (Expr (..), Name, preludeDefs)
+import           Expressionism.Arithmetic   (AExpr (..))
+import qualified Expressionism.Arithmetic   as A
 import qualified Expressionism.Bool         as B
-import           Expressionism.GraphReducer (execBounded, initMachine, result, MachineError)
+import           Expressionism.GraphReducer (MachineError, execBounded,
+                                             initMachine, result)
 
 
 main :: IO ()
-main = defaultMain $ testGroup "tests" [preludeTests, boolTests]
+main = defaultMain $ testGroup "tests" [preludeTests, boolTests, arithTests]
 
 
 runMachine x y = fmap result . execBounded 100 $ initMachine x y
@@ -50,3 +53,24 @@ boolTests = testGroup "bool"
     where
     retTrue = retVal 1
     retFalse = retVal 0
+
+
+arithTests :: TestTree
+arithTests = testGroup "arithmetic"
+    [ testCase "interpret" $ A.interpret exprA @=? 20
+    , testCase "compile and run" $ A.run (A.compile exprA) @=? 20
+    , testCase "let bindings" $ do
+        A.interpret exprB @=? 26
+        A.run (A.compile exprB) @=? 26
+    ]
+
+    where
+
+    exprA :: AExpr Name
+    exprA = ANum 1 `APlus` ANum 3 `AMult` ANum 5
+
+    exprB :: AExpr Name
+    exprB =
+        ALet "x" (ANum 3 `APlus` ANum 1) $
+        ALet "y" (ANum 4 `AMult` AIdent "x") $
+        AIdent "y" `APlus` ANum 10

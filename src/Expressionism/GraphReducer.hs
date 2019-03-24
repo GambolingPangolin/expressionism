@@ -39,8 +39,8 @@ data GNode
 
 instance Show GNode where
     show (GNodeNum i)        = "{{" <> show i <> "}}"
-    show (GNodeAp a b)       = "(" <> show a <> " " <> show b <> ")"
-    show (GNodeGlobal i ops) = "G(" <> show i <> ", " <> show ops <> ")"
+    show (GNodeAp a b)       = "NAp " <> show a <> " " <> show b
+    show (GNodeGlobal i ops) = "G." <> show i <> ": " <> show ops
 
 
 type Stack = [Addr]
@@ -60,9 +60,14 @@ instance Show Machine where
     show m = intercalate "\n"
         [ "Code: " <> show (machineCode m)
         , "Stack: " <> show (machineStack m)
-        , "Heap: " <> (show . snd . machineHeap) m
+        , "Heap: \t" <> showHeap (machineHeap m)
         , "Globals: " <> show (machineGlobals m)
         ]
+
+showHeap :: Heap -> String
+showHeap (_, h) = intercalate "\n\t" $ showItem <$> Map.toList h
+    where
+    showItem (a, n) = show a <> " ~> " <> show n
 
 
 pushStack :: Addr -> Machine -> Machine

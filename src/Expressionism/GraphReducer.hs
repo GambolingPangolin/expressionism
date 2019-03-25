@@ -9,6 +9,7 @@ import           Data.List       (intercalate)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           Data.Word       (Word32, Word8)
+
 import           Expressionism   (CoreExpr, CoreProgram, CoreSC, Expr (..),
                                   Name)
 
@@ -101,6 +102,7 @@ data MachineError
     | MissingArguments
     | NoInstructions
     | StackUnderflow
+    | BadPointer
     deriving (Eq, Show)
 
 
@@ -119,7 +121,14 @@ machineStep m = case machineCode m of
 
             Just (GNodeGlobal i ops')
                 | length as < fromIntegral i    -> Left MissingArguments
-                | otherwise                     -> Right $ setCode (ops' ++ ops) m
+                | otherwise                     -> update <$> traverse resolve top
+                where
+                top = take (fromIntegral i) as
+                bot = drop (fromIntegral i) s
+                update newTop = setCode (ops' <> ops) $ m { machineStack = newTop <> bot }
+                resolve a = case Map.lookup a . snd $ machineHeap m of
+                    Just (GNodeAp _ a') -> Right a'
+                    _                   -> Left BadPointer
 
             Just (GNodeInd a') -> Right $ m { machineStack = a' : as }
 
@@ -141,9 +150,7 @@ machineStep m = case machineCode m of
         Right . pushStack a . setCode ops $ m { machineHeap = h }
 
     Push n : ops ->
-        let Just (GNodeAp _ a) = Map.lookup (ss !! n) . snd $ machineHeap m
-            _ : ss = machineStack m
-        in Right . pushStack a $ setCode ops m
+        Right . pushStack (machineStack m !! n) $ setCode ops m
 
     Pop n : ops ->
         Right $ m { machineStack = drop n (machineStack m), machineCode = ops }

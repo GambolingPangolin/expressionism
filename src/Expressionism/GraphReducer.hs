@@ -4,7 +4,9 @@
 
 module Expressionism.GraphReducer where
 
+import           Control.Monad   (join)
 import           Data.Bifunctor  (second)
+import           Data.Functor    ((<&>))
 import           Data.List       (intercalate)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -19,6 +21,7 @@ data GOp
     = Slide Int
     | Unwind
     | Update Int
+    | Alloc Int
     | PushGlobal Name
     | PushInt Int
     | Push Int
@@ -40,6 +43,7 @@ data GNode
     | GNodeAp Addr Addr
     | GNodeGlobal Word8 [GOp]
     | GNodeInd Addr
+    | GNodeEmpty
     deriving Eq
 
 instance Show GNode where
@@ -47,6 +51,7 @@ instance Show GNode where
     show (GNodeAp a b)       = "NAp " <> show a <> " " <> show b
     show (GNodeGlobal i ops) = "G." <> show i <> ": " <> show ops
     show (GNodeInd a)        = "# " <> show a
+    show GNodeEmpty          = "-()-"
 
 
 type Stack = [Addr]
@@ -112,6 +117,12 @@ machineStep m = case machineCode m of
         case machineStack m of
             s : ss -> Right . setCode ops $ m { machineStack = s : drop n ss }
             _      -> Left StackUnderflow
+
+    Alloc n : ops ->
+        let allocEmpty m =
+                let (a, h) = allocate (machineHeap m) GNodeEmpty
+                in pushStack a $ m { machineHeap = h }
+        in Right $ iterate allocEmpty m !! n
 
     Unwind : ops -> case machineStack m of
         s@(a : as) -> case Map.lookup a . snd $ machineHeap m of
@@ -179,11 +190,19 @@ compile (name, args, body) = (name, fromIntegral (length args), code)
 compileC :: Map Name Int -> CoreExpr -> [GOp]
 compileC env = \case
     Ident x -> maybe [PushGlobal x] (pure . Push) $ Map.lookup x env
-    Ap x y -> compileC env y ++ compileC (shift env) x ++ [MkAp]
+    Ap x y -> compileC env y ++ compileC (shift 1 env) x ++ [MkAp]
     Nmbr n -> [PushInt n]
 
+    Let False defs body ->
+        join $ (compileDef <$> zip [0..] defs) <> [compileC env' body <> [Slide n]]
+        where
+        compileDef (i, (_, def)) = compileC (shift i env) def
+        n = length defs
+        envLocal = Map.fromList $ zip [1..] defs <&> \(i, (name, _)) -> (name, n - i)
+        env' = envLocal <> shift n env
+
     where
-    shift = fmap (+1)
+    shift i = fmap (+i)
 
 
 -- | Prepare the starting state of the machine

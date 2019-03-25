@@ -36,7 +36,23 @@ preludeTests = testGroup "prelude"
     , testCase "K1 should project the second arg" $
         runMachine0 (Ap (Ap (Ident "K1") (Nmbr 1)) (Nmbr 2)) @?= retVal 2
 
+    , testCase "let bindings" $ do
+        runMachine0 letProgramA @?= retVal 1
+        runMachine0 letProgramB @?= retVal 1
+
     ]
+
+    where
+
+    letProgramA = Let False [("x", Ap (Ap (Ident "K") (Nmbr 1)) (Nmbr 2))] $
+        Ap (Ap (Ident "K") (Ident "x")) (Nmbr 3)
+
+    letProgramB =
+        Let False [("x", (Ident "K" `Ap` Nmbr 1) `Ap` Nmbr 2)]
+        . Let False [("y", (Ident "K" `Ap` Ident "x") `Ap` Nmbr 4)]
+        $ (Ident "K1" `Ap` Nmbr 5) `Ap` Ident "y"
+
+
 
 
 boolTests :: TestTree

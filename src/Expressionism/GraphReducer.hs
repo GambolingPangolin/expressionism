@@ -32,6 +32,8 @@ data GOp
     | Push Int
     | Pop Int
 
+    | Branch
+
     | Neg
     | Add | Sub | Mul
     | IsLT | IsGT | IsEQ
@@ -180,6 +182,19 @@ machineStep m = case machineCode m of
 
         | otherwise -> Left StackUnderflow
 
+    Branch : ops ->
+        case machineStack m of
+            a : as
+                | Just (GNodeNum 1) <- viewHeap a
+                -> Right . setCode (Push 1 : ops) $ m { machineStack = as }
+
+                | Just (GNodeNum 0) <- viewHeap a
+                -> Right . setCode (Push 2 : ops) $ m { machineStack = as }
+
+                | otherwise -> Left BadPointer
+
+            _ -> Left StackUnderflow
+
     Update n : ops ->
         let an = as !! n
             a : as = machineStack m
@@ -214,6 +229,8 @@ machineStep m = case machineCode m of
             | Just (GNodeNum x) <- Map.lookup a . snd . machineHeap $ m
             -> Right . setCode ops . boxInteger (negate x) $ m
 
+            | otherwise -> Left BadPointer
+
         _ -> Left StackUnderflow
 
     Add : _ -> dyadic (+) m
@@ -227,6 +244,7 @@ machineStep m = case machineCode m of
 
     where
     toInt = bool 0 1
+    viewHeap a = Map.lookup a . snd . machineHeap $ m
 
 
 dyadic :: (Int -> Int -> Int) -> Machine -> Either MachineError Machine
@@ -237,6 +255,8 @@ dyadic op m = case machineStack m of
         -> Right
             . setCode (drop 1 (machineCode m))
             . boxInteger (x `op` y) $ m
+
+        | otherwise -> Left BadPointer
 
     _ -> Left StackUnderflow
 
@@ -303,8 +323,11 @@ initMachine st defs
 
 
 primitives :: [(Name, Word8, [GOp])]
-primitives = ds <> [("negate", 1, [Eval, Neg, Unwind])]
+primitives = ds <> [ neg, ifCombinator ]
+
     where
+    neg = ("negate", 1, [Eval, Neg, Update 1, Pop 1, Unwind])
+    ifCombinator = ("if", 3, [Push 0, Eval, Branch, Update 3, Pop 3, Unwind])
     ds = uncurry dyadicPrimitive <$>
         [ ("+", Add), ("-", Sub), ("*", Mul)
         , ("<", IsLT), (">", IsGT), ("==", IsEQ)
@@ -312,7 +335,7 @@ primitives = ds <> [("negate", 1, [Eval, Neg, Unwind])]
 
 
 dyadicPrimitive :: Name -> GOp -> (Name, Word8, [GOp])
-dyadicPrimitive name op = (name, 2, [Eval, Push 1, Eval, Push 1, op, Unwind])
+dyadicPrimitive name op = (name, 2, [Eval, Push 1, Eval, Push 1, op, Update 2, Pop 2, Unwind])
 
 
 -- | Run a computation for up to the given number of steps

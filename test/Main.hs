@@ -47,6 +47,10 @@ preludeTests = testGroup "prelude"
         runMachine0 primProgramA @?= retVal 7
         runMachine0 primProgramB @?= retVal 6
         runMachine0 primProgramC @?= retVal 1
+
+    , testCase "branching" $
+        runMachine0 branchProgram @?= retVal 144
+
     ]
 
     where
@@ -78,7 +82,15 @@ preludeTests = testGroup "prelude"
         Let False [("x", Ident "+" `Ap` Nmbr 1 `Ap` Nmbr 2)]
         $ Ident "+" `Ap` Ident "x" `Ap` Nmbr 3
 
+    -- > 3 0
     primProgramC = Ident ">" `Ap` Nmbr 3 `Ap` Nmbr 0
+
+    -- let x = 12 in if (4 > x) x (+ x x)
+    branchProgram =
+        Let False [("x", Nmbr 12)]
+        $ Ident "if" `Ap` (Ident "<" `Ap` Nmbr 4 `Ap` Ident "x")
+            `Ap` (Ident "*" `Ap` Ident "x" `Ap` Ident "x")
+            `Ap` Ident "x"
 
 
 boolTests :: TestTree

@@ -119,10 +119,10 @@ machineStep m = case machineCode m of
             _      -> Left StackUnderflow
 
     Alloc n : ops ->
-        let allocEmpty m =
-                let (a, h) = allocate (machineHeap m) GNodeEmpty
-                in pushStack a $ m { machineHeap = h }
-        in Right $ iterate allocEmpty m !! n
+        let allocEmpty m
+                | (a, h) <- allocate (machineHeap m) GNodeEmpty
+                =  pushStack a $ m { machineHeap = h }
+        in Right . setCode ops $  iterate allocEmpty m !! n
 
     Unwind : ops -> case machineStack m of
         s@(a : as) -> case Map.lookup a . snd $ machineHeap m of
@@ -193,13 +193,23 @@ compileC env = \case
     Ap x y -> compileC env y ++ compileC (shift 1 env) x ++ [MkAp]
     Nmbr n -> [PushInt n]
 
-    Let False defs body ->
-        join $ (compileDef <$> zip [0..] defs) <> [compileC env' body <> [Slide n]]
+    Let isRec defs body
+        | isRec ->
+            join $  [[Alloc n]] <>
+                    (compileDefRec env' <$> zip [0..] defs) <>
+                    [compileC env' body <> [Slide n]]
+
+        | otherwise ->
+            join $ (compileDef env <$> zip [0..] defs) <> [compileC env' body <> [Slide n]]
+
         where
-        compileDef (i, (_, def)) = compileC (shift i env) def
         n = length defs
         envLocal = Map.fromList $ zip [1..] defs <&> \(i, (name, _)) -> (name, n - i)
         env' = envLocal <> shift n env
+        compileDef env (i, (_, def)) = compileC (shift i env) def
+        compileDefRec env (i, (_, def)) = compileC env def <> [ Update (n-1-i) ]
+
+
 
     where
     shift i = fmap (+i)

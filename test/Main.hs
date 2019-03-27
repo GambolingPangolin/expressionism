@@ -40,17 +40,31 @@ preludeTests = testGroup "prelude"
         runMachine0 letProgramA @?= retVal 1
         runMachine0 letProgramB @?= retVal 1
 
+    , testCase "letrec bindings" $
+        runMachine0 letRecProgram @?= retVal 1
+
     ]
 
     where
 
+    -- let x = K 1 2 in K x 3
     letProgramA = Let False [("x", Ap (Ap (Ident "K") (Nmbr 1)) (Nmbr 2))] $
         Ap (Ap (Ident "K") (Ident "x")) (Nmbr 3)
 
+    -- let x = K 1 2 in let y = K x 4 in K1 5 y
     letProgramB =
         Let False [("x", (Ident "K" `Ap` Nmbr 1) `Ap` Nmbr 2)]
         . Let False [("y", (Ident "K" `Ap` Ident "x") `Ap` Nmbr 4)]
         $ (Ident "K1" `Ap` Nmbr 5) `Ap` Ident "y"
+
+    -- letrec x = K 1 y
+    --        y = K x
+    -- in y 2
+    letRecProgram =
+        Let True [ ("x", (Ident "K" `Ap` Nmbr 1) `Ap` Ident "y")
+                 , ("y", Ident "K" `Ap` Ident "x")
+                 ]
+        $ Ident "y" `Ap` Nmbr 2
 
 
 

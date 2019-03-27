@@ -43,6 +43,10 @@ preludeTests = testGroup "prelude"
     , testCase "letrec bindings" $
         runMachine0 letRecProgram @?= retVal 1
 
+    , testCase "primitives" $ do
+        runMachine0 primProgramA @?= retVal 7
+        runMachine0 primProgramB @?= retVal 6
+        runMachine0 primProgramC @?= retVal 1
     ]
 
     where
@@ -66,7 +70,15 @@ preludeTests = testGroup "prelude"
                  ]
         $ Ident "y" `Ap` Nmbr 2
 
+    -- + 3 4
+    primProgramA = Ident "+" `Ap` Nmbr 3 `Ap` Nmbr 4
 
+    -- let x = + 1 2 in + x 3
+    primProgramB =
+        Let False [("x", Ident "+" `Ap` Nmbr 1 `Ap` Nmbr 2)]
+        $ Ident "+" `Ap` Ident "x" `Ap` Nmbr 3
+
+    primProgramC = Ident ">" `Ap` Nmbr 3 `Ap` Nmbr 0
 
 
 boolTests :: TestTree

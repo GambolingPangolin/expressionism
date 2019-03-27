@@ -6,6 +6,7 @@ module Expressionism.GraphReducer where
 
 import           Control.Monad   (join)
 import           Data.Bifunctor  (second)
+import           Data.Bool       (bool)
 import           Data.Functor    ((<&>))
 import           Data.List       (intercalate)
 import           Data.Map.Strict (Map)
@@ -20,13 +21,20 @@ import           Expressionism   (CoreExpr, CoreProgram, CoreSC, Expr (..),
 data GOp
     = Slide Int
     | Unwind
+    | Eval
     | Update Int
     | Alloc Int
+
+    | MkAp
+
     | PushGlobal Name
     | PushInt Int
     | Push Int
     | Pop Int
-    | MkAp
+
+    | Neg
+    | Add | Sub | Mul
+    | IsLT | IsGT | IsEQ
     deriving (Eq, Show)
 
 
@@ -63,6 +71,7 @@ data Machine
     = Machine
     { machineCode    :: [GOp]
     , machineStack   :: Stack
+    , machineFreezer :: [([GOp], Stack)]
     , machineHeap    :: Heap
     , machineGlobals :: Map Name Addr
     } deriving Eq
@@ -71,6 +80,7 @@ instance Show Machine where
     show m = intercalate "\n"
         [ "Code: " <> show (machineCode m)
         , "Stack: " <> show (machineStack m)
+        , "Freezer:\n\t" <> showFreezer (machineFreezer m)
         , "Heap: \t" <> showHeap (machineHeap m)
         , "Globals: " <> show (machineGlobals m)
         ]
@@ -80,6 +90,11 @@ showHeap (_, h) = intercalate "\n\t" $ showItem <$> Map.toList h
     where
     showItem (a, n) = show a <> " ~> " <> show n
 
+
+showFreezer :: [([GOp], Stack)] -> String
+showFreezer = intercalate "\n\n\t" . fmap showItem
+    where
+    showItem (c, s) = show c <> "\n\t" <> show s
 
 pushStack :: Addr -> Machine -> Machine
 pushStack addr m = m { machineStack = addr : machineStack m }
@@ -92,6 +107,12 @@ setCode ops m = m { machineCode = ops }
 -- | Simplistic allocation function that uses the next available address
 allocate :: Heap -> GNode -> (Addr, Heap)
 allocate (a, h) g = (a, (a+1, Map.insert a g h))
+
+
+boxInteger :: Int -> Machine -> Machine
+boxInteger n m = m { machineHeap = h, machineStack = a : machineStack m }
+    where
+    (a, h) = allocate (machineHeap m) (GNodeNum n)
 
 
 updateHeap :: Addr -> GNode -> Heap -> Heap
@@ -126,7 +147,12 @@ machineStep m = case machineCode m of
 
     Unwind : ops -> case machineStack m of
         s@(a : as) -> case Map.lookup a . snd $ machineHeap m of
-            Just (GNodeNum n) -> Right $ setCode [] m
+            Just (GNodeNum n) -> case machineFreezer m of
+                (ops', s') : ss -> Right $ m { machineCode = ops'
+                                             , machineStack = a : s'
+                                             , machineFreezer = ss
+                                             }
+                _ -> Right $ setCode [] m
 
             Just (GNodeAp a1 _) -> Right $ pushStack a1 m
 
@@ -144,6 +170,15 @@ machineStep m = case machineCode m of
             Just (GNodeInd a') -> Right $ m { machineStack = a' : as }
 
         _ -> Left StackUnderflow
+
+    Eval : ops
+        | a : as <- machineStack m
+        -> Right $ m { machineCode = [Unwind]
+                     , machineStack = [a]
+                     , machineFreezer = (ops, as) : machineFreezer m
+                     }
+
+        | otherwise -> Left StackUnderflow
 
     Update n : ops ->
         let an = as !! n
@@ -174,7 +209,40 @@ machineStep m = case machineCode m of
 
             _ -> Left StackUnderflow
 
+    Neg : ops -> case machineStack m of
+        a : as
+            | Just (GNodeNum x) <- Map.lookup a . snd . machineHeap $ m
+            -> Right . setCode ops . boxInteger (negate x) $ m
+
+        _ -> Left StackUnderflow
+
+    Add : _ -> dyadic (+) m
+    Sub : _ -> dyadic (-) m
+    Mul : _ -> dyadic (*) m
+    IsLT : _ -> dyadic (\x y -> toInt $ x < y) m
+    IsGT : _ -> dyadic (\x y -> toInt $ x > y) m
+    IsEQ : _ -> dyadic (\x y -> toInt $ x == y) m
+
     _ -> Left NoInstructions
+
+    where
+    toInt = bool 0 1
+
+
+dyadic :: (Int -> Int -> Int) -> Machine -> Either MachineError Machine
+dyadic op m = case machineStack m of
+    a : b : xs
+        | Just (GNodeNum x) <- get a
+        , Just (GNodeNum y) <- get b
+        -> Right
+            . setCode (drop 1 (machineCode m))
+            . boxInteger (x `op` y) $ m
+
+    _ -> Left StackUnderflow
+
+    where
+
+    get = flip Map.lookup . snd $ machineHeap m
 
 
 -- | Compile a supercombinator
@@ -221,16 +289,30 @@ initMachine st defs
     = Machine
     { machineCode = [PushGlobal "main", Unwind]
     , machineStack = []
+    , machineFreezer = []
     , machineHeap = h0
-    , machineGlobals = g
+    , machineGlobals = g0
     }
 
     where
-    (h0, g) = foldl step (emptyHeap, Map.empty) $ ("main", [], st) : defs
-    step (h, g) sc =
-        let (name, i, code) = compile sc
-            (a, h') = allocate h (GNodeGlobal i code)
+    compiled = compile <$> (("main", [], st) : defs)
+    (h0, g0) = foldl step (emptyHeap, Map.empty) $ compiled <> primitives
+    step (h, g) (name, i, code) =
+        let (a, h') = allocate h (GNodeGlobal i code)
         in (h', Map.insert name a g)
+
+
+primitives :: [(Name, Word8, [GOp])]
+primitives = ds <> [("negate", 1, [Eval, Neg, Unwind])]
+    where
+    ds = uncurry dyadicPrimitive <$>
+        [ ("+", Add), ("-", Sub), ("*", Mul)
+        , ("<", IsLT), (">", IsGT), ("==", IsEQ)
+        ]
+
+
+dyadicPrimitive :: Name -> GOp -> (Name, Word8, [GOp])
+dyadicPrimitive name op = (name, 2, [Eval, Push 1, Eval, Push 1, op, Unwind])
 
 
 -- | Run a computation for up to the given number of steps

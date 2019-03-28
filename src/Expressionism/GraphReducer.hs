@@ -159,8 +159,16 @@ machineStep m = case machineCode m of
             Just (GNodeAp a1 _) -> Right $ pushStack a1 m
 
             Just (GNodeGlobal i ops')
+                | length as < fromIntegral i
+                , not (null as)
+                , (ops', s') : f <- machineFreezer m
+                -> Right . setCode (ops' <> ops) $ m { machineStack = last as : s'
+                                                     , machineFreezer = f }
+
                 | length as < fromIntegral i    -> Left MissingArguments
+
                 | otherwise                     -> update <$> traverse resolve top
+
                 where
                 top = take (fromIntegral i) as
                 bot = drop (fromIntegral i) s
@@ -271,7 +279,35 @@ compile (name, args, body) = (name, fromIntegral (length args), code)
     where
     d = length args
     positions = Map.fromList $ zip args [0..]
-    code = compileC positions body ++ [Update d, Pop d, Unwind]
+    code = compileE positions body ++ [Update d, Pop d, Unwind]
+
+
+-- | Strict compilation
+compileE :: Map Name Int -> CoreExpr -> [GOp]
+compileE env = \case
+    Nmbr n -> [PushInt n]
+    Let isRec defs body
+        | isRec ->
+            join $ [[Alloc n]] <>
+                   (compileDefRec n env' <$> defs') <>
+                   [compileE env' body <> [Slide n]]
+
+        | otherwise ->
+            join $ (compileDef env <$> defs') <> [compileE env' body <> [Slide n]]
+
+        where
+        n = length defs
+        defs' = zip [0..] defs
+        env' = addLocals n defs env
+
+    Ident "negate" `Ap` e -> compileE env e <> [Neg]
+
+    Ident op `Ap` e1 `Ap` e2
+        | Just gop <- lookup op dyadics
+        -> compileE env e2 <> compileE (shift 1 env) e1 <> [gop]
+
+
+    e -> compileC env e <> [Eval]
 
 
 -- | Generate 'GOp' instructions from an expression
@@ -284,23 +320,34 @@ compileC env = \case
     Let isRec defs body
         | isRec ->
             join $  [[Alloc n]] <>
-                    (compileDefRec env' <$> zip [0..] defs) <>
+                    (compileDefRec n env' <$> defs') <>
                     [compileC env' body <> [Slide n]]
 
         | otherwise ->
-            join $ (compileDef env <$> zip [0..] defs) <> [compileC env' body <> [Slide n]]
+            join $ (compileDef env <$> defs') <> [compileC env' body <> [Slide n]]
 
         where
         n = length defs
-        envLocal = Map.fromList $ zip [1..] defs <&> \(i, (name, _)) -> (name, n - i)
-        env' = envLocal <> shift n env
-        compileDef env (i, (_, def)) = compileC (shift i env) def
-        compileDefRec env (i, (_, def)) = compileC env def <> [ Update (n-1-i) ]
+        defs' = zip [0..] defs
+        env' = addLocals n defs env
 
 
+compileDef :: Map Name Int -> (Int, (a, CoreExpr)) -> [GOp]
+compileDef env (i, (_, def)) = compileC (shift i env) def
 
+
+compileDefRec :: Int -> Map Name Int -> (Int, (a, CoreExpr)) -> [GOp]
+compileDefRec n env (i, (_, def)) = compileC env def <> [ Update (n-1-i) ]
+
+
+shift :: Int -> Map Name Int -> Map Name Int
+shift i = fmap (+i)
+
+
+addLocals :: Int -> [(Name, CoreExpr)] -> Map Name Int -> Map Name Int
+addLocals n defs env = envLocal <> shift n env
     where
-    shift i = fmap (+i)
+    envLocal = Map.fromList $ zip [1..] defs <&> \(i, (name, _)) -> (name, n - i)
 
 
 -- | Prepare the starting state of the machine
@@ -328,10 +375,14 @@ primitives = ds <> [ neg, ifCombinator ]
     where
     neg = ("negate", 1, [Eval, Neg, Update 1, Pop 1, Unwind])
     ifCombinator = ("if", 3, [Push 0, Eval, Branch, Update 3, Pop 3, Unwind])
-    ds = uncurry dyadicPrimitive <$>
-        [ ("+", Add), ("-", Sub), ("*", Mul)
-        , ("<", IsLT), (">", IsGT), ("==", IsEQ)
-        ]
+    ds = uncurry dyadicPrimitive <$> dyadics
+
+
+dyadics :: [(Name, GOp)]
+dyadics =
+    [ ("+", Add), ("-", Sub), ("*", Mul)
+    , ("<", IsLT), (">", IsGT), ("==", IsEQ)
+    ]
 
 
 dyadicPrimitive :: Name -> GOp -> (Name, Word8, [GOp])

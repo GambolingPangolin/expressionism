@@ -1,5 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+import           Control.Monad              (replicateM)
+import           Control.Monad.Trans.Except (runExceptT)
+import           Control.Monad.Trans.State  (evalStateT)
+import           Data.Functor.Identity      (runIdentity)
 import           Test.Tasty
 import           Test.Tasty.HUnit           (testCase, (@?=))
 
@@ -7,22 +11,26 @@ import           Expressionism              (Expr (..), Name, preludeDefs)
 import           Expressionism.Arithmetic   (AExpr (..))
 import qualified Expressionism.Arithmetic   as A
 import qualified Expressionism.Bool         as B
-import           Expressionism.GraphReducer (MachineError, execBounded,
-                                             initMachine, result)
+import           Expressionism.Compiler     (initMachine)
+import           Expressionism.GraphReducer (machineStep, runExecT)
+import           Expressionism.Machine      (GNode, GraphNode (..),
+                                             MachineError)
 
 
 main :: IO ()
 main = defaultMain $ testGroup "tests" [preludeTests, boolTests, arithTests]
 
 
-runMachine x y = fmap result . execBounded 100 $ initMachine x y
+runMachine x y =
+    fmap last . runIdentity $
+        runExecT (initMachine x y) (replicateM 100 machineStep)
 
 runMachine0 = flip runMachine preludeDefs
 runMachineBool = flip runMachine B.preludeBool
 
 
-retVal :: Int -> Either MachineError (Maybe Int)
-retVal i = Right $ Just i
+retVal :: Int -> Either MachineError (Maybe GNode)
+retVal i = Right . Just $ GNodeNum i
 
 
 preludeTests :: TestTree
@@ -48,8 +56,8 @@ preludeTests = testGroup "prelude"
         runMachine0 primProgramB @?= retVal 6
         runMachine0 primProgramC @?= retVal 1
 
-    , testCase "branching" $
-        runMachine0 branchProgram @?= retVal 144
+    , testCase "case" $
+        runMachine0 caseProgram @?= retVal 3
 
     ]
 
@@ -85,12 +93,11 @@ preludeTests = testGroup "prelude"
     -- > 3 0
     primProgramC = Ident ">" `Ap` Nmbr 3 `Ap` Nmbr 0
 
-    -- let x = 12 in if (4 > x) x (+ x x)
-    branchProgram =
-        Let False [("x", Nmbr 12)]
-        $ Ident "if" `Ap` (Ident "<" `Ap` Nmbr 4 `Ap` Ident "x")
-            `Ap` (Ident "*" `Ap` Ident "x" `Ap` Ident "x")
-            `Ap` Ident "x"
+    caseProgram = Case (Constr 0 1 `Ap` Nmbr 3)
+        [ (0, ["x"], Ident "x")
+        , (1, ["y"], Ident "y")
+        ]
+
 
 
 boolTests :: TestTree

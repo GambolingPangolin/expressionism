@@ -16,7 +16,7 @@ import           Data.Bool   (bool)
 import           Data.String (IsString)
 import           Data.Text   (Text)
 import qualified Data.Text   as T
-import           Data.Word   (Word64)
+import           Data.Word   (Word64, Word8)
 
 
 newtype Name = Name { unName :: Text }
@@ -30,7 +30,7 @@ instance Show Name where
 data Expr a
     = Ident a
     | Nmbr Int
-    | Constr Word64 Word64
+    | Constr Word64 Word8
     | Ap (Expr a) (Expr a)
     | Let Bool [(a, Expr a)] (Expr a)
     | Case (Expr a) [(Word64, [a], Expr a)]

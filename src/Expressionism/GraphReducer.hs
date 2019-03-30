@@ -1,414 +1,319 @@
-{-# LANGUAGE GeneralizedNewtypeDeriving #-}
-{-# LANGUAGE LambdaCase                 #-}
-{-# LANGUAGE OverloadedStrings          #-}
+{-# LANGUAGE LambdaCase #-}
 
 module Expressionism.GraphReducer where
 
-import           Control.Monad   (join)
-import           Data.Bifunctor  (second)
-import           Data.Bool       (bool)
-import           Data.Functor    ((<&>))
-import           Data.List       (intercalate)
-import           Data.Map.Strict (Map)
-import qualified Data.Map.Strict as Map
-import           Data.Word       (Word32, Word8)
+import           Control.Monad              (replicateM, void)
+import           Control.Monad.Trans.Class  (lift)
+import           Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
+import           Control.Monad.Trans.State  (evalStateT, get, modify, put)
+import           Data.Bifunctor             (second)
+import           Data.Bool                  (bool)
+import           Data.Map.Strict            (Map)
+import qualified Data.Map.Strict            as Map
+import           Data.Word                  (Word32, Word64, Word8)
 
-import           Expressionism   (CoreExpr, CoreProgram, CoreSC, Expr (..),
-                                  Name)
+import           Expressionism              (CoreExpr, CoreProgram, CoreSC,
+                                             Expr (..), Name)
+import           Expressionism.Machine      (Addr, GNode, GOp (..),
+                                             GraphNode (..), Heap, Machine (..),
+                                             MachineError (..), MachineT,
+                                             boxNode, output, popInstruction,
+                                             pushAddr, pushCode, setCode,
+                                             updateHeap)
 
-
--- | Instructions for the G-Machine (Mark I)
-data GOp
-    = Slide Int
-    | Unwind
-    | Eval
-    | Update Int
-    | Alloc Int
-
-    | MkAp
-
-    | PushGlobal Name
-    | PushInt Int
-    | Push Int
-    | Pop Int
-
-    | Branch
-
-    | Neg
-    | Add | Sub | Mul
-    | IsLT | IsGT | IsEQ
-    deriving (Eq, Show)
+type ExecT m = ExceptT MachineError (MachineT m)
 
 
-newtype Addr = Addr Word32
-    deriving (Eq, Ord, Num)
-
-instance Show Addr where
-    show (Addr w) = show w
-
-
--- | Possible nodes that get allocated on the heap
-data GNode
-    = GNodeNum Int
-    | GNodeAp Addr Addr
-    | GNodeGlobal Word8 [GOp]
-    | GNodeInd Addr
-    | GNodeEmpty
-    deriving Eq
-
-instance Show GNode where
-    show (GNodeNum i)        = "{{" <> show i <> "}}"
-    show (GNodeAp a b)       = "NAp " <> show a <> " " <> show b
-    show (GNodeGlobal i ops) = "G." <> show i <> ": " <> show ops
-    show (GNodeInd a)        = "# " <> show a
-    show GNodeEmpty          = "-()-"
-
-
-type Stack = [Addr]
-type Heap = (Addr, Map Addr GNode)
-
-
--- | Machine state
-data Machine
-    = Machine
-    { machineCode    :: [GOp]
-    , machineStack   :: Stack
-    , machineFreezer :: [([GOp], Stack)]
-    , machineHeap    :: Heap
-    , machineGlobals :: Map Name Addr
-    } deriving Eq
-
-instance Show Machine where
-    show m = intercalate "\n"
-        [ "Code: " <> show (machineCode m)
-        , "Stack: " <> show (machineStack m)
-        , "Freezer:\n\t" <> showFreezer (machineFreezer m)
-        , "Heap: \t" <> showHeap (machineHeap m)
-        , "Globals: " <> show (machineGlobals m)
-        ]
-
-showHeap :: Heap -> String
-showHeap (_, h) = intercalate "\n\t" $ showItem <$> Map.toList h
+slide :: Monad m => Int -> ExecT m ()
+slide n =
+    lift get >>= inner
     where
-    showItem (a, n) = show a <> " ~> " <> show n
+    inner m@Machine{ machineStack = s : ss } =
+        lift . modify $ \m -> m { machineStack = s : drop n ss }
+    inner _ = throwE StackUnderflow
 
 
-showFreezer :: [([GOp], Stack)] -> String
-showFreezer = intercalate "\n\n\t" . fmap showItem
-    where
-    showItem (c, s) = show c <> "\n\t" <> show s
-
-pushStack :: Addr -> Machine -> Machine
-pushStack addr m = m { machineStack = addr : machineStack m }
+alloc :: Monad m => Int -> ExecT m [Addr]
+alloc n = lift $ replicateM n (boxNode GNodeEmpty)
 
 
-setCode :: [GOp] -> Machine -> Machine
-setCode ops m = m { machineCode = ops }
-
-
--- | Simplistic allocation function that uses the next available address
-allocate :: Heap -> GNode -> (Addr, Heap)
-allocate (a, h) g = (a, (a+1, Map.insert a g h))
-
-
-boxInteger :: Int -> Machine -> Machine
-boxInteger n m = m { machineHeap = h, machineStack = a : machineStack m }
-    where
-    (a, h) = allocate (machineHeap m) (GNodeNum n)
-
-
-updateHeap :: Addr -> GNode -> Heap -> Heap
-updateHeap a n = second (Map.insert a n)
-
-
-emptyHeap :: Heap
-emptyHeap = (0, Map.empty)
-
-
-data MachineError
-    = MissingGlobal
-    | MissingArguments
-    | NoInstructions
-    | StackUnderflow
-    | BadPointer
-    deriving (Eq, Show)
-
-
-machineStep :: Machine -> Either MachineError Machine
-machineStep m = case machineCode m of
-    Slide n : ops ->
-        case machineStack m of
-            s : ss -> Right . setCode ops $ m { machineStack = s : drop n ss }
-            _      -> Left StackUnderflow
-
-    Alloc n : ops ->
-        let allocEmpty m
-                | (a, h) <- allocate (machineHeap m) GNodeEmpty
-                =  pushStack a $ m { machineHeap = h }
-        in Right . setCode ops $  iterate allocEmpty m !! n
-
-    Unwind : ops -> case machineStack m of
+unwind :: Monad m => ExecT m ()
+unwind = lift get >>= \m ->
+    case machineStack m of
         s@(a : as) -> case Map.lookup a . snd $ machineHeap m of
-            Just (GNodeNum n) -> case machineFreezer m of
-                (ops', s') : ss -> Right $ m { machineCode = ops'
-                                             , machineStack = a : s'
-                                             , machineFreezer = ss
-                                             }
-                _ -> Right $ setCode [] m
+            Just (GNodeNum _) -> onPrimitive
 
-            Just (GNodeAp a1 _) -> Right $ pushStack a1 m
+            Just (GNodeData _ _) -> onPrimitive
 
-            Just (GNodeGlobal i ops')
+            Just (GNodeAp a1 _) -> lift $ pushAddr a1 >> pushCode [Unwind]
+
+            Just (GNodeGlobal i body)
                 | length as < fromIntegral i
                 , not (null as)
                 , (ops', s') : f <- machineFreezer m
-                -> Right . setCode (ops' <> ops) $ m { machineStack = last as : s'
-                                                     , machineFreezer = f }
+                ->  lift $
+                        pushCode ops' >>
+                        modify (\m -> m { machineStack = last as : s'
+                                         , machineFreezer = f }
+                               )
 
-                | length as < fromIntegral i    -> Left MissingArguments
+                | length as < fromIntegral i    -> throwE MissingArguments
 
-                | otherwise                     -> update <$> traverse resolve top
+                | otherwise                     -> lift . update =<< traverse resolve top
 
                 where
+                code = either id (constrCode i) body
+                constrCode n t = [Pack t n, Update 0, Unwind]
+
                 top = take (fromIntegral i) as
                 bot = drop (fromIntegral i) s
-                update newTop = setCode (ops' <> ops) $ m { machineStack = newTop <> bot }
+
+                update newTop =
+                    pushCode code >>
+                    modify (\m -> m { machineStack = newTop <> bot })
+
                 resolve a = case Map.lookup a . snd $ machineHeap m of
-                    Just (GNodeAp _ a') -> Right a'
-                    _                   -> Left BadPointer
+                    Just (GNodeAp _ a') -> pure a'
+                    _                   -> throwE BadPointer
 
-            Just (GNodeInd a') -> Right $ m { machineStack = a' : as }
+            Just (GNodeInd a') ->
+                lift $
+                    pushCode [Unwind] >>
+                    modify (\m -> m { machineStack = a' : as })
 
-        _ -> Left StackUnderflow
+            where
+            onPrimitive = case machineFreezer m of
+                (ops', s') : ss ->
+                    lift . put $ m { machineCode = ops'
+                                   , machineStack = a : s'
+                                   , machineFreezer = ss
+                                   }
+                _ -> lift $ setCode []
 
-    Eval : ops
+        _ -> throwE StackUnderflow
+
+
+eval :: Monad m => ExecT m ()
+eval = lift get >>= \m ->
+    case machineStack m of
+        a : as ->
+            lift . put $ m { machineCode = [Unwind]
+                           , machineStack = [a]
+                           , machineFreezer = (machineCode m, as) : machineFreezer m
+                           }
+        _ -> throwE StackUnderflow
+
+
+update :: Monad m => Int -> ExecT m ()
+update n = lift $ get >>= \m ->
+    let an = as !! n
+        a : as = machineStack m
+    in
+    updateHeap an (GNodeInd a) >>
+    modify (\m -> m { machineStack = as })
+
+
+pack :: Monad m => Word64 -> Word8 -> ExecT m Addr
+pack t n = lift get >>= inner
+    where
+    inner m
+        | length args == fromIntegral n
+        = lift $
+            modify (\m -> m { machineStack = s }) >>
+            boxNode (GNodeData t args)
+
+        | otherwise = throwE MissingArguments
+
+        where
+        (args, s) = splitAt (fromIntegral n) $ machineStack m
+
+
+caseJump :: Monad m => ExecT m ()
+caseJump = lift get >>= inner
+    where
+    inner m
         | a : as <- machineStack m
-        -> Right $ m { machineCode = [Unwind]
-                     , machineStack = [a]
-                     , machineFreezer = (ops, as) : machineFreezer m
-                     }
+        , Just (GNodeData t _) <- viewHeap m a
+        = lift $
+            pushCode [Push (fromIntegral t)] >>
+            modify (\m -> m { machineStack = as })
 
-        | otherwise -> Left StackUnderflow
+        | otherwise = throwE BadPointer
 
-    Branch : ops ->
-        case machineStack m of
-            a : as
-                | Just (GNodeNum 1) <- viewHeap a
-                -> Right . setCode (Push 1 : ops) $ m { machineStack = as }
 
-                | Just (GNodeNum 0) <- viewHeap a
-                -> Right . setCode (Push 2 : ops) $ m { machineStack = as }
+unpack :: Monad m => ExecT m Addr
+unpack = lift get >>= inner
+    where
+    inner m
+        | a : as <- machineStack m
+        , Just (GNodeData _ xs) <- viewHeap m a
+        = lift $
+            modify (\m -> m { machineStack = xs <> as }) >>
+            boxNode (GNodeNum $ length xs)
 
-                | otherwise -> Left BadPointer
+        | otherwise
+        = throwE BadPointer
 
-            _ -> Left StackUnderflow
 
-    Update n : ops ->
-        let an = as !! n
-            a : as = machineStack m
-            h = updateHeap an (GNodeInd a) $ machineHeap m
-        in Right . setCode ops $ m { machineStack = as, machineHeap = h }
-
-    PushGlobal x : ops ->
+pushGlobal :: Monad m => Name -> ExecT m ()
+pushGlobal x = lift get >>= inner
+    where
+    inner m =
         let g = Map.lookup x $ machineGlobals m
-            update a = pushStack a $ setCode ops m
-        in maybe (Left MissingGlobal) (Right . update) g
+        in maybe (throwE MissingGlobal) (lift . pushAddr) g
 
-    PushInt x : ops    ->
-        let (a, h) = allocate (machineHeap m) $ GNodeNum x in
-        Right . pushStack a . setCode ops $ m { machineHeap = h }
 
-    Push n : ops ->
-        Right . pushStack (machineStack m !! n) $ setCode ops m
+pushCodeOp :: Monad m => Addr -> ExecT m ()
+pushCodeOp = lift . pushAddr
 
-    Pop n : ops ->
-        Right $ m { machineStack = drop n (machineStack m), machineCode = ops }
 
-    MkAp : ops ->
+pushData :: Monad m => Word64 -> Word8 -> ExecT m Addr
+pushData t n = lift $ boxNode (GNodeGlobal n (Right t))
+
+
+pushInt :: Monad m => Int -> ExecT m Addr
+pushInt = lift . boxNode . GNodeNum
+
+
+push :: Monad m => Int -> ExecT m ()
+push n = lift $ get >>= inner
+    where
+    inner m = pushAddr (machineStack m !! n)
+
+
+pop :: Monad m => Int -> ExecT m ()
+pop n =
+    lift $ get >>= \m ->
+    put $ m { machineStack = drop n (machineStack m) }
+
+
+pushN :: Monad m => ExecT m ()
+pushN = lift get >>= inner
+    where
+    inner m
+        | a : as <- machineStack m
+        , Just (GNodeNum n) <- viewHeap m a
+        = lift $ pushAddr (machineStack m !! n)
+
+        | otherwise = throwE BadPointer
+
+
+mkAp :: Monad m => ExecT m Addr
+mkAp = lift get >>= inner
+    where
+    inner m =
         case machineStack m of
             a1 : a2 : ss ->
-                let (a, h) = allocate (machineHeap m) $ GNodeAp a1 a2 in
-                Right . setCode ops $ m { machineStack = a : ss, machineHeap = h }
+                lift $
+                    modify (\m -> m { machineStack = ss }) >>
+                    boxNode (GNodeAp a1 a2)
 
-            _ -> Left StackUnderflow
+            _ -> throwE StackUnderflow
 
-    Neg : ops -> case machineStack m of
+
+neg :: Monad m => ExecT m Addr
+neg = lift get >>= inner
+    where
+    inner m = case machineStack m of
         a : as
             | Just (GNodeNum x) <- Map.lookup a . snd . machineHeap $ m
-            -> Right . setCode ops . boxInteger (negate x) $ m
+            -> lift $ boxNode (GNodeNum $ negate x)
 
-            | otherwise -> Left BadPointer
+            | otherwise -> throwE BadPointer
 
-        _ -> Left StackUnderflow
+        _ -> throwE StackUnderflow
 
-    Add : _ -> dyadic (+) m
-    Sub : _ -> dyadic (-) m
-    Mul : _ -> dyadic (*) m
-    IsLT : _ -> dyadic (\x y -> toInt $ x < y) m
-    IsGT : _ -> dyadic (\x y -> toInt $ x > y) m
-    IsEQ : _ -> dyadic (\x y -> toInt $ x == y) m
 
-    _ -> Left NoInstructions
 
+printOp :: Monad m => ExecT m ()
+printOp = lift get >>= inner
     where
-    toInt = bool 0 1
-    viewHeap a = Map.lookup a . snd . machineHeap $ m
+    inner m
+        | a : _ <- machineStack m
+        = maybe (throwE BadPointer) (lift . output) $ chaseRefs (machineHeap m) a
 
 
-dyadic :: (Int -> Int -> Int) -> Machine -> Either MachineError Machine
-dyadic op m = case machineStack m of
-    a : b : xs
-        | Just (GNodeNum x) <- get a
-        , Just (GNodeNum y) <- get b
-        -> Right
-            . setCode (drop 1 (machineCode m))
-            . boxInteger (x `op` y) $ m
+toInt = bool 0 1
+viewHeap m a = Map.lookup a . snd . machineHeap $ m
 
-        | otherwise -> Left BadPointer
 
-    _ -> Left StackUnderflow
-
+checkResult :: Monad m => ExecT m (Maybe GNode)
+checkResult = lift get >>= inner
     where
 
-    get = flip Map.lookup . snd $ machineHeap m
+    returnable g@(GNodeNum _)    = Just g
+    returnable g@(GNodeData _ _) = Just g
+    returnable _                 = Nothing
+
+    inner m
+        | [] <- machineCode m
+        , a : _ <- machineStack m
+        , Just x <- returnable =<< viewHeap m a
+        = return (Just x)
+
+        | otherwise = throwE NoInstructions
 
 
--- | Compile a supercombinator
-compile :: CoreSC -> (Name, Word8, [GOp])
-compile (name, args, body) = (name, fromIntegral (length args), code)
+machineStep :: Monad m => ExecT m (Maybe GNode)
+machineStep = lift popInstruction >>= maybe checkResult (nothing . inner)
     where
-    d = length args
-    positions = Map.fromList $ zip args [0..]
-    code = compileE positions body ++ [Update d, Pop d, Unwind]
+    nothing = (>> return Nothing)
+    inner = \case
+        Slide n -> slide n
+        Alloc n -> void $ alloc n
+        Unwind -> unwind
+        Eval -> eval
+        Update n -> update n
+        Pack t n -> void $ pack t n
+        CaseJump -> caseJump
+        Unpack -> void unpack
+
+        PushGlobal x -> pushGlobal x
+        PushCode a -> void $ pushCodeOp a
+        PushData t n -> void $ pushData t n
+        PushInt n -> void $ pushInt n
+        Push n -> push n
+        Pop n -> pop n
+        PushN -> pushN
+
+        MkAp -> void mkAp
+
+        Neg -> void neg
+        Add -> dyadic (+)
+        Sub -> dyadic (-)
+        Mul -> dyadic (*)
+        IsLT -> dyadic (\x y -> toInt $ x < y)
+        IsGT -> dyadic (\x y -> toInt $ x > y)
+        IsEQ -> dyadic (\x y -> toInt $ x == y)
+
+        Print -> printOp
 
 
--- | Strict compilation
-compileE :: Map Name Int -> CoreExpr -> [GOp]
-compileE env = \case
-    Nmbr n -> [PushInt n]
-    Let isRec defs body
-        | isRec ->
-            join $ [[Alloc n]] <>
-                   (compileDefRec n env' <$> defs') <>
-                   [compileE env' body <> [Slide n]]
+newtype Graph = Graph (GraphNode Graph)
+    deriving (Eq, Show)
 
-        | otherwise ->
-            join $ (compileDef env <$> defs') <> [compileE env' body <> [Slide n]]
-
-        where
-        n = length defs
-        defs' = zip [0..] defs
-        env' = addLocals n defs env
-
-    Ident "negate" `Ap` e -> compileE env e <> [Neg]
-
-    Ident op `Ap` e1 `Ap` e2
-        | Just gop <- lookup op dyadics
-        -> compileE env e2 <> compileE (shift 1 env) e1 <> [gop]
+chaseRefs :: Heap -> Addr -> Maybe Graph
+chaseRefs hp@(_, h) a = case Map.lookup a h of
+    Just (GNodeNum i)     -> Just (Graph $ GNodeNum i)
+    Just (GNodeData i as) -> Graph . GNodeData i <$> traverse (chaseRefs hp) as
+    _                     -> Nothing
 
 
-    e -> compileC env e <> [Eval]
-
-
--- | Generate 'GOp' instructions from an expression
-compileC :: Map Name Int -> CoreExpr -> [GOp]
-compileC env = \case
-    Ident x -> maybe [PushGlobal x] (pure . Push) $ Map.lookup x env
-    Ap x y -> compileC env y ++ compileC (shift 1 env) x ++ [MkAp]
-    Nmbr n -> [PushInt n]
-
-    Let isRec defs body
-        | isRec ->
-            join $  [[Alloc n]] <>
-                    (compileDefRec n env' <$> defs') <>
-                    [compileC env' body <> [Slide n]]
-
-        | otherwise ->
-            join $ (compileDef env <$> defs') <> [compileC env' body <> [Slide n]]
-
-        where
-        n = length defs
-        defs' = zip [0..] defs
-        env' = addLocals n defs env
-
-
-compileDef :: Map Name Int -> (Int, (a, CoreExpr)) -> [GOp]
-compileDef env (i, (_, def)) = compileC (shift i env) def
-
-
-compileDefRec :: Int -> Map Name Int -> (Int, (a, CoreExpr)) -> [GOp]
-compileDefRec n env (i, (_, def)) = compileC env def <> [ Update (n-1-i) ]
-
-
-shift :: Int -> Map Name Int -> Map Name Int
-shift i = fmap (+i)
-
-
-addLocals :: Int -> [(Name, CoreExpr)] -> Map Name Int -> Map Name Int
-addLocals n defs env = envLocal <> shift n env
+dyadic :: Monad m => (Int -> Int -> Int) -> ExecT m ()
+dyadic op = lift get >>= void . inner
     where
-    envLocal = Map.fromList $ zip [1..] defs <&> \(i, (name, _)) -> (name, n - i)
+    inner m = case machineStack m of
+        a : b : xs
+            | Just (GNodeNum x) <- getNum m a
+            , Just (GNodeNum y) <- getNum m b
+            -> lift $ boxNode (GNodeNum $ x `op` y)
+
+            | otherwise -> throwE BadPointer
+
+        _ -> throwE StackUnderflow
+
+    getNum m = flip Map.lookup . snd $ machineHeap m
 
 
--- | Prepare the starting state of the machine
-initMachine :: CoreExpr -> CoreProgram -> Machine
-initMachine st defs
-    = Machine
-    { machineCode = [PushGlobal "main", Unwind]
-    , machineStack = []
-    , machineFreezer = []
-    , machineHeap = h0
-    , machineGlobals = g0
-    }
-
-    where
-    compiled = compile <$> (("main", [], st) : defs)
-    (h0, g0) = foldl step (emptyHeap, Map.empty) $ compiled <> primitives
-    step (h, g) (name, i, code) =
-        let (a, h') = allocate h (GNodeGlobal i code)
-        in (h', Map.insert name a g)
-
-
-primitives :: [(Name, Word8, [GOp])]
-primitives = ds <> [ neg, ifCombinator ]
-
-    where
-    neg = ("negate", 1, [Eval, Neg, Update 1, Pop 1, Unwind])
-    ifCombinator = ("if", 3, [Push 0, Eval, Branch, Update 3, Pop 3, Unwind])
-    ds = uncurry dyadicPrimitive <$> dyadics
-
-
-dyadics :: [(Name, GOp)]
-dyadics =
-    [ ("+", Add), ("-", Sub), ("*", Mul)
-    , ("<", IsLT), (">", IsGT), ("==", IsEQ)
-    ]
-
-
-dyadicPrimitive :: Name -> GOp -> (Name, Word8, [GOp])
-dyadicPrimitive name op = (name, 2, [Eval, Push 1, Eval, Push 1, op, Update 2, Pop 2, Unwind])
-
-
--- | Run a computation for up to the given number of steps
-execBounded :: Word32 -> Machine -> Either MachineError Machine
-execBounded n m = case machineStep m of
-    Right m'    | n > 0 -> execBounded (n-1) m'
-                | otherwise -> Right m'
-    Left NoInstructions -> Right m
-    x -> x
-
-
--- | Extract the result from the machine if it
---   1. has no remaining instructions and
---   2. has an int on top of the stack
-result :: Machine -> Maybe Int
-result m
-    | null (machineCode m)
-    = case machineStack m of
-        a : _ -> case Map.lookup a . snd $ machineHeap m of
-            Just (GNodeNum n) -> Just n
-            _                 -> Nothing
-        _ -> Nothing
-
-    | otherwise
-    = Nothing
+runExecT :: Monad m => m Machine -> ExecT m a -> m (Either MachineError a)
+runExecT m ops = evalStateT (runExceptT ops) =<< m

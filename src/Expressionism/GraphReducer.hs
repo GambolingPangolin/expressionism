@@ -21,6 +21,7 @@ import           Expressionism.Machine      (Addr, GNode, GOp (..),
                                              pushAddr, pushCode, setCode,
                                              updateHeap)
 
+
 type ExecT m = ExceptT MachineError (MachineT m)
 
 
@@ -48,14 +49,20 @@ unwind = lift get >>= \m ->
             Just (GNodeAp a1 _) -> lift $ pushAddr a1 >> pushCode [Unwind]
 
             Just (GNodeGlobal i body)
-                | length as < fromIntegral i
-                , not (null as)
+                | null as
                 , (ops', s') : f <- machineFreezer m
-                ->  lift $
-                        pushCode ops' >>
-                        modify (\m -> m { machineStack = last as : s'
-                                         , machineFreezer = f }
-                               )
+                -> lift $
+                    setCode ([Unwind] <> ops') >>
+                    modify (\m -> m { machineStack = a : s', machineFreezer = f })
+
+
+                | length as < fromIntegral i
+                , (ops', s') : f <- machineFreezer m
+                -> lift $
+                    pushCode ops' >>
+                    modify (\m -> m { machineStack = last as : s'
+                                    , machineFreezer = f }
+                           )
 
                 | length as < fromIntegral i    -> throwE MissingArguments
 
@@ -148,7 +155,7 @@ unpack = lift get >>= inner
         | a : as <- machineStack m
         , Just (GNodeData _ xs) <- viewHeap m a
         = lift $
-            modify (\m -> m { machineStack = xs <> as }) >>
+            modify (\m -> m { machineStack = reverse xs <> as }) >>
             boxNode (GNodeNum $ length xs)
 
         | otherwise
@@ -163,8 +170,23 @@ pushGlobal x = lift get >>= inner
         in maybe (throwE MissingGlobal) (lift . pushAddr) g
 
 
-pushCodeOp :: Monad m => Addr -> ExecT m ()
-pushCodeOp = lift . pushAddr
+pushRef :: Monad m => Addr -> ExecT m ()
+pushRef = lift . pushAddr
+
+
+pushCodeOp :: Monad m => ExecT m [GOp]
+pushCodeOp = lift get >>= inner
+    where
+    inner m
+        | a : as <- machineStack m
+        , Just (GNodeGlobal _ (Left code)) <- viewHeap m a
+        = lift $
+            pushCode code >>
+            modify (\m -> m { machineStack = as }) >>
+            return code
+
+        | otherwise
+        = throwE BadPointer
 
 
 pushData :: Monad m => Word64 -> Word8 -> ExecT m Addr
@@ -193,7 +215,8 @@ pushN = lift get >>= inner
     inner m
         | a : as <- machineStack m
         , Just (GNodeNum n) <- viewHeap m a
-        = lift $ pushAddr (machineStack m !! n)
+        = lift . modify $ \m ->
+            m { machineStack = (as !! n) : as }
 
         | otherwise = throwE BadPointer
 
@@ -233,7 +256,11 @@ printOp = lift get >>= inner
         = maybe (throwE BadPointer) (lift . output) $ chaseRefs (machineHeap m) a
 
 
+toInt :: Integral a => Bool -> a
 toInt = bool 0 1
+
+
+viewHeap :: Machine -> Addr -> Maybe GNode
 viewHeap m a = Map.lookup a . snd . machineHeap $ m
 
 
@@ -259,17 +286,21 @@ machineStep = lift popInstruction >>= maybe checkResult (nothing . inner)
     where
     nothing = (>> return Nothing)
     inner = \case
+
         Slide n -> slide n
-        Alloc n -> void $ alloc n
         Unwind -> unwind
         Eval -> eval
+
+        Alloc n -> void $ alloc n
         Update n -> update n
         Pack t n -> void $ pack t n
-        CaseJump -> caseJump
         Unpack -> void unpack
 
+        CaseJump -> caseJump
+
         PushGlobal x -> pushGlobal x
-        PushCode a -> void $ pushCodeOp a
+        PushCode -> void pushCodeOp
+        PushRef a -> pushRef a
         PushData t n -> void $ pushData t n
         PushInt n -> void $ pushInt n
         Push n -> push n
@@ -291,6 +322,7 @@ machineStep = lift popInstruction >>= maybe checkResult (nothing . inner)
 
 newtype Graph = Graph (GraphNode Graph)
     deriving (Eq, Show)
+
 
 chaseRefs :: Heap -> Addr -> Maybe Graph
 chaseRefs hp@(_, h) a = case Map.lookup a h of
@@ -315,5 +347,5 @@ dyadic op = lift get >>= void . inner
     getNum m = flip Map.lookup . snd $ machineHeap m
 
 
-runExecT :: Monad m => m Machine -> ExecT m a -> m (Either MachineError a)
-runExecT m ops = evalStateT (runExceptT ops) =<< m
+runExecT :: Monad m => ExecT m a -> Machine -> m (Either MachineError a)
+runExecT ops = evalStateT (runExceptT ops)

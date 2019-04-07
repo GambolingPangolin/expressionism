@@ -24,7 +24,8 @@ data GOp
     | MkAp
 
     | PushGlobal Name
-    | PushCode Addr
+    | PushRef Addr
+    | PushCode
     | PushData Word64 Word8
     | PushInt Int
     | Push Int
@@ -58,7 +59,6 @@ data GraphNode a
     | GNodeData Word64 [a]
     | GNodeAp a a
     | GNodeGlobal Word8 (Either [GOp] Word64)
-    | GNodeCode [GOp]
     | GNodeInd a
     | GNodeEmpty
     deriving Eq
@@ -71,7 +71,6 @@ instance Show a => Show (GraphNode a) where
     show (GNodeData i as)    = "Pack{" <> show i <> "; " <> show as <> "}"
     show (GNodeAp a b)       = "NAp " <> show a <> " " <> show b
     show (GNodeGlobal i ops) = "G." <> show i <> ": " <> show ops
-    show (GNodeCode ops)     = "Code: " <> show ops
     show (GNodeInd a)        = "# " <> show a
     show GNodeEmpty          = "-()-"
 

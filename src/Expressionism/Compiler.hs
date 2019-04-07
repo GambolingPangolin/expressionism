@@ -73,13 +73,19 @@ compileC env = \case
     Case e alts ->
         compileE env e `cnct`
         traverse (compileAlt env) (sortBy (compare `on` pr1) alts) `cnct`
-        pure [Push m, CaseJump, Slide m, Push 1, Unpack, PushN]
+        pure [Push m, CaseJump, Slide m, Push 1, Unpack, PushN, PushCode]
         where
         m = length alts
         pr1 (x, _, _) = x
         compileAlt env (_, args, expr) =
-            compileC (addLocals args env) expr >>=
-            fmap PushCode . allocate . GNodeCode
+            compileC (addLocals args $ shift 2 env) expr >>= storeCode
+            where
+            d = length args
+            storeCode =
+                fmap PushRef . allocate
+                . GNodeGlobal (fromIntegral d)
+                . Left
+                . (<> [Slide $ d + 2])
 
     Let isRec defs body -> compileLet compileC env isRec defs body
 

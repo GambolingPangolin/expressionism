@@ -23,7 +23,7 @@ main = defaultMain $ testGroup "tests" [preludeTests, boolTests, arithTests]
 
 runMachine x y =
     fmap last . runIdentity $
-        runExecT (initMachine x y) (replicateM 100 machineStep)
+        runExecT (replicateM 100 machineStep) =<< initMachine x y
 
 runMachine0 = flip runMachine preludeDefs
 runMachineBool = flip runMachine B.preludeBool

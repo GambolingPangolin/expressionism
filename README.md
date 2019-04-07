@@ -7,6 +7,8 @@ I want to understand the process of how high level Haskell code becomes low-leve
 
 - [x] pretty printer for `Core`
 - [ ] parser for `Core`
-- [x] graph machine mark I
-- [ ] graph machine supporting primitives
+- [x] primitives
+- [x] let bindings
+- [x] data constructors and case expressions
+- [x] strict context
 - [ ] garbage collection

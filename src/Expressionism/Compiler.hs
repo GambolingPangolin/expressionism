@@ -16,14 +16,11 @@ import           Data.Word                 (Word32, Word64, Word8)
 
 import           Expressionism             (CoreExpr, CoreProgram, CoreSC,
                                             Expr (..), Name)
-import           Expressionism.Machine     (GOp (..), GraphNode (..),
+import           Expressionism.Machine     (GOp, GraphNode (..), GraphOp (..),
                                             Machine (..), MachineT, addGlobal,
                                             allocate, blankMachine, boxNode,
                                             emptyHeap, pushCode)
 
-
-cnct :: (Applicative f, Monoid a) => f a -> f a -> f a
-cnct x y = (<>) <$> x <*> y
 
 
 type Environment = Map Name Int
@@ -33,9 +30,10 @@ type Environment = Map Name Int
 compile :: Monad m => CoreSC -> MachineT m ()
 compile (name, args, body) =
     compileE positions body >>= \code ->
-    let node = GNodeGlobal (fromIntegral d) . Left $ code <> [Update d, Pop d, Unwind] in
+    let node = GNodeFun (fromIntegral d) $ code <> [Update d, Pop d, Unwind] in
     allocate node >>= \addr ->
     addGlobal name addr
+
     where
     d = length args
     positions = Map.fromList $ zip args [0..]
@@ -60,20 +58,21 @@ compileE env = \case
 -- | Generate 'GOp' instructions from an expression
 compileC :: Monad m => Environment -> CoreExpr -> MachineT m [GOp]
 compileC env = \case
+    Nmbr n -> pure [PushInt n]
+
+    Constr t n -> pure [PushData t n]
+
     Ident x ->
         pure $ maybe [PushGlobal x] (pure . Push) $ Map.lookup x env
 
     Ap x y ->
         compileC env y `cnct` compileC (shift 1 env) x `cnct` pure [MkAp]
 
-    Nmbr n -> pure [PushInt n]
-
-    Constr t n -> pure [PushData t n]
-
     Case e alts ->
         compileE env e `cnct`
         traverse (compileAlt env) (sortBy (compare `on` pr1) alts) `cnct`
         pure [Push m, CaseJump, Slide m, Push 1, Unpack, PushN, PushCode]
+
         where
         m = length alts
         pr1 (x, _, _) = x
@@ -83,8 +82,7 @@ compileC env = \case
             d = length args
             storeCode =
                 fmap PushRef . allocate
-                . GNodeGlobal (fromIntegral d)
-                . Left
+                . GNodeFun (fromIntegral d)
                 . (<> [Slide $ d + 2])
 
     Let isRec defs body -> compileLet compileC env isRec defs body
@@ -145,7 +143,7 @@ initMachine st defs
         pushCode [PushGlobal "main", Unwind]
 
     install (name, argN, code) =
-        allocate (GNodeGlobal argN (Left code)) >>= addGlobal name
+        allocate (GNodeFun argN code) >>= addGlobal name
 
 
 primitives :: [(Name, Word8, [GOp])]
@@ -166,3 +164,7 @@ dyadics =
 
 dyadicPrimitive :: Name -> GOp -> (Name, Word8, [GOp])
 dyadicPrimitive name op = (name, 2, [Eval, Push 1, Eval, Push 1, op, Update 2, Pop 2, Unwind])
+
+
+cnct :: (Applicative f, Monoid a) => f a -> f a -> f a
+cnct x y = (<>) <$> x <*> y

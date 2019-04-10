@@ -13,8 +13,8 @@ import           Data.Word                 (Word32, Word64, Word8)
 import           Expressionism             (Name)
 
 
--- | Instructions for the G-Machine (Mark I)
-data GOp
+-- | Instructions for the G-Machine
+data GraphOp a
     = Slide Int
     | Unwind
     | Eval
@@ -24,7 +24,7 @@ data GOp
     | MkAp
 
     | PushGlobal Name
-    | PushRef Addr
+    | PushRef a
     | PushCode
     | PushData Word64 Word8
     | PushInt Int
@@ -46,6 +46,9 @@ data GOp
     deriving (Eq, Show)
 
 
+type GOp = GraphOp Addr
+
+
 newtype Addr = Addr Word32
     deriving (Eq, Ord, Num)
 
@@ -56,23 +59,32 @@ instance Show Addr where
 -- | Possible nodes that get allocated on the heap
 data GraphNode a
     = GNodeNum Int
+    -- ^ concrete number
     | GNodeData Word64 [a]
-    | GNodeAp a a
-    | GNodeGlobal Word8 (Either [GOp] Word64)
-    | GNodeInd a
+    -- ^ data structure
+    | GNodeFun Word8 [GraphOp a]
+    -- ^ function definition
+    | GNodeConstr Word8 Word64
+    -- ^ unapplied data constructor
     | GNodeEmpty
+    -- ^ empty node
+    | GNodeInd a
+    -- ^ indirection node
+    | GNodeAp a a
+    -- ^ application node
     deriving Eq
 
 
 type GNode = GraphNode Addr
 
 instance Show a => Show (GraphNode a) where
-    show (GNodeNum i)        = "{{" <> show i <> "}}"
-    show (GNodeData i as)    = "Pack{" <> show i <> "; " <> show as <> "}"
-    show (GNodeAp a b)       = "NAp " <> show a <> " " <> show b
-    show (GNodeGlobal i ops) = "G." <> show i <> ": " <> show ops
-    show (GNodeInd a)        = "# " <> show a
-    show GNodeEmpty          = "-()-"
+    show (GNodeNum i)      = "{{" <> show i <> "}}"
+    show (GNodeData i as)  = "Pack{" <> show i <> "; " <> show as <> "}"
+    show (GNodeAp a b)     = "NAp " <> show a <> " " <> show b
+    show (GNodeFun i ops)  = "G (" <> show i <> "): " <> show ops
+    show (GNodeConstr i t) = "C_" <> show t <> " (" <> show i <> ")"
+    show (GNodeInd a)      = "# " <> show a
+    show GNodeEmpty        = "-()-"
 
 
 type Stack = [Addr]

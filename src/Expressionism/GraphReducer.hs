@@ -14,8 +14,8 @@ import           Data.Word                  (Word32, Word64, Word8)
 
 import           Expressionism              (CoreExpr, CoreProgram, CoreSC,
                                              Expr (..), Name)
-import           Expressionism.Machine      (Addr, GNode, GOp (..),
-                                             GraphNode (..), Heap, Machine (..),
+import           Expressionism.Machine      (Addr, GNode, GOp, GraphNode (..),
+                                             GraphOp (..), Heap, Machine (..),
                                              MachineError (..), MachineT,
                                              boxNode, output, popInstruction,
                                              pushAddr, pushCode, setCode,
@@ -48,25 +48,45 @@ unwind = lift get >>= \m ->
 
             Just (GNodeAp a1 _) -> lift $ pushAddr a1 >> pushCode [Unwind]
 
-            Just (GNodeGlobal i body)
+            Just (GNodeFun i code) -> appHead i (Left code)
+            Just (GNodeConstr i t) -> appHead i (Right t)
+
+
+            Just (GNodeInd a') ->
+                lift $
+                    pushCode [Unwind] >>
+                    modify (\m -> m { machineStack = a' : as })
+
+            where
+            onPrimitive
+                | (ops', s') : ss <- machineFreezer m
+                = lift . put $ m { machineCode = ops'
+                                 , machineStack = last s : s'
+                                 , machineFreezer = ss
+                                 }
+                | otherwise = lift $ setCode []
+
+            appHead i body
                 | null as
                 , (ops', s') : f <- machineFreezer m
-                -> lift $
+                = lift $
                     setCode ([Unwind] <> ops') >>
                     modify (\m -> m { machineStack = a : s', machineFreezer = f })
 
 
                 | length as < fromIntegral i
                 , (ops', s') : f <- machineFreezer m
-                -> lift $
+                = lift $
                     pushCode ops' >>
                     modify (\m -> m { machineStack = last as : s'
                                     , machineFreezer = f }
-                           )
+                            )
 
-                | length as < fromIntegral i    -> throwE MissingArguments
+                | length as < fromIntegral i
+                = throwE MissingArguments
 
-                | otherwise                     -> lift . update =<< traverse resolve top
+                | otherwise
+                = lift . update =<< traverse resolve top
 
                 where
                 code = either id (constrCode i) body
@@ -83,19 +103,6 @@ unwind = lift get >>= \m ->
                     Just (GNodeAp _ a') -> pure a'
                     _                   -> throwE BadPointer
 
-            Just (GNodeInd a') ->
-                lift $
-                    pushCode [Unwind] >>
-                    modify (\m -> m { machineStack = a' : as })
-
-            where
-            onPrimitive = case machineFreezer m of
-                (ops', s') : ss ->
-                    lift . put $ m { machineCode = ops'
-                                   , machineStack = a : s'
-                                   , machineFreezer = ss
-                                   }
-                _ -> lift $ setCode []
 
         _ -> throwE StackUnderflow
 
@@ -179,7 +186,7 @@ pushCodeOp = lift get >>= inner
     where
     inner m
         | a : as <- machineStack m
-        , Just (GNodeGlobal _ (Left code)) <- viewHeap m a
+        , Just (GNodeFun _ code) <- viewHeap m a
         = lift $
             pushCode code >>
             modify (\m -> m { machineStack = as }) >>
@@ -190,7 +197,7 @@ pushCodeOp = lift get >>= inner
 
 
 pushData :: Monad m => Word64 -> Word8 -> ExecT m Addr
-pushData t n = lift $ boxNode (GNodeGlobal n (Right t))
+pushData t n = lift $ boxNode (GNodeConstr n t)
 
 
 pushInt :: Monad m => Int -> ExecT m Addr
@@ -275,8 +282,10 @@ checkResult = lift get >>= inner
     inner m
         | [] <- machineCode m
         , a : _ <- machineStack m
-        , Just x <- returnable =<< viewHeap m a
-        = return (Just x)
+        = return $ returnable =<< viewHeap m a
+
+        | not . null $ machineCode m
+        = return Nothing
 
         | otherwise = throwE NoInstructions
 

@@ -59,6 +59,9 @@ preludeTests = testGroup "prelude"
     , testCase "case" $
         runMachine0 caseProgram @?= retVal 3
 
+    , testCase "bool" $
+        runMachine0 boolProgram @?= retVal 100
+
     ]
 
     where
@@ -97,6 +100,8 @@ preludeTests = testGroup "prelude"
         [ (0, ["x"], Ident "x")
         , (1, ["y"], Ident "y")
         ]
+
+    boolProgram = Ident "if" `Ap` Ident "true" `Ap` Nmbr 100 `Ap` Nmbr 0
 
 
 

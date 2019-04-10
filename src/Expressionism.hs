@@ -60,6 +60,9 @@ preludeDefs =
     , ("S", ["f", "g", "x"], (Ident "f" `Ap` Ident "x") `Ap` (Ident "g" `Ap` Ident "x"))
     , ("compose", ["f", "g", "x"], Ident "f" `Ap` (Ident "g" `Ap` Ident "x"))
     , ("twice", ["f"], (Ident "compose" `Ap` Ident "f") `Ap` Ident "f")
+    , ("true", [], Constr 0 0)
+    , ("false", [], Constr 1 0)
+    , ("if", ["c", "t", "f"], Case (Ident "c") [(0, [], Ident "t"), (1, [], Ident "f")])
     ]
 
 

@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 import           Control.Monad              (replicateM)
+import           Control.Monad.Trans.Class  (lift)
 import           Control.Monad.Trans.Except (runExceptT)
 import           Control.Monad.Trans.State  (evalStateT)
 import           Data.Functor.Identity      (runIdentity)
@@ -22,8 +23,10 @@ main = defaultMain $ testGroup "tests" [preludeTests, boolTests, arithTests]
 
 
 runMachine x y =
-    fmap last . runIdentity $
-        runExecT (replicateM 100 machineStep) =<< initMachine x y
+    fmap last
+    . runIdentity
+    . runExecT (replicateM 100 machineStep)
+    $ initMachine x y
 
 runMachine0 = flip runMachine preludeDefs
 runMachineBool = flip runMachine B.preludeBool
@@ -56,8 +59,9 @@ preludeTests = testGroup "prelude"
         runMachine0 primProgramB @?= retVal 6
         runMachine0 primProgramC @?= retVal 1
 
-    , testCase "case" $
+    , testCase "case" $ do
         runMachine0 caseProgram @?= retVal 3
+        runMachine0 caseProgram2 @?= retVal 13
 
     , testCase "bool" $
         runMachine0 boolProgram @?= retVal 100
@@ -99,6 +103,13 @@ preludeTests = testGroup "prelude"
     caseProgram = Case (Constr 0 1 `Ap` Nmbr 3)
         [ (0, ["x"], Ident "x")
         , (1, ["y"], Ident "y")
+        ]
+
+    caseProgram2 = Let False [("z", caseProgram)] $
+        Case (Constr 1 2 `Ap` Nmbr 10 `Ap` Nmbr 11)
+        [ (0, [], Nmbr 101)
+        , (1, ["x", "y"], Ident "+" `Ap` Ident "x" `Ap` Ident "z")
+        , (2, ["x"], Ident "*" `Ap` Ident "x" `Ap` Ident "x")
         ]
 
     boolProgram = Ident "if" `Ap` Ident "true" `Ap` Nmbr 100 `Ap` Nmbr 0

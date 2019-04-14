@@ -3,14 +3,16 @@
 
 module Expressionism.Compiler where
 
-import           Control.Monad             (join)
-import           Control.Monad.Trans.State (StateT, evalStateT, execStateT,
-                                            modify)
+import           Control.Monad             (join, void)
+import           Control.Monad.Trans.State (StateT, evalStateT, execStateT, get,
+                                            modify, put)
 import           Data.Function             (on)
 import           Data.Functor              ((<&>))
+import           Data.Functor.Identity     (runIdentity)
 import           Data.List                 (intercalate, sortBy)
 import           Data.Map.Strict           (Map)
 import qualified Data.Map.Strict           as Map
+import           Data.Ord                  (Down (..))
 import           Data.String               (fromString)
 import           Data.Word                 (Word32, Word64, Word8)
 
@@ -19,48 +21,53 @@ import           Expressionism             (CoreExpr, CoreProgram, CoreSC,
 import           Expressionism.Machine     (GOp, GraphNode (..), GraphOp (..),
                                             Machine (..), MachineT, addGlobal,
                                             allocate, blankMachine, boxNode,
-                                            emptyHeap, pushCode)
+                                            emptyHeap, pushCode, updateHeap,
+                                            viewGlobal)
 
 
 
 type Environment = Map Name Int
+type Compiler m = Environment -> CoreExpr -> MachineT m [GOp]
 
 
 -- | Compile a supercombinator
-compile :: Monad m => CoreSC -> MachineT m ()
-compile (name, args, body) =
-    compileE positions body >>= \code ->
-    let node = GNodeFun (fromIntegral d) $ code <> [Update d, Pop d, Unwind] in
-    allocate node >>= \addr ->
-    addGlobal name addr
+compileSC :: Monad m => [Name] -> CoreExpr -> MachineT m [GOp]
+compileSC args body =
+    compileE positions body <&> \code ->
+        code <> [Update d, Pop d, Unwind]
 
     where
     d = length args
     positions = Map.fromList $ zip args [0..]
 
 
--- | Strict compilation
+-- | Strict compilation.  Reduces the expression down to an int or satuarated data constructor
 compileE :: Monad m => Environment -> CoreExpr -> MachineT m [GOp]
 compileE env = \case
-    Nmbr n -> pure [PushInt n]
-
-    Let isRec defs body -> compileLet compileE env isRec defs body
-
     Ident "negate" `Ap` e -> compileE env e `cnct` pure [Neg]
 
     Ident op `Ap` e1 `Ap` e2
         | Just gop <- lookup op dyadics
-        -> compileE env e2 `cnct` compileE (shift 1 env) e1 `cnct` pure [gop]
+        -> compileE env e2 `cnct` compileE (shift 1 env) e1 `cnct` pure [gop, Slide 2]
 
-    e -> compileC env e `cnct` pure [Eval]
+    Nmbr n -> pure [PushInt n]
+
+    Let isRec defs body -> compileLet compileE env isRec defs body
+
+    e -> compileC env e `cnct` pure [Unwind]
 
 
--- | Generate 'GOp' instructions from an expression
+
+-- | Leave a node on top of the stack representing the root node of the graph
+-- of the expression
 compileC :: Monad m => Environment -> CoreExpr -> MachineT m [GOp]
 compileC env = \case
     Nmbr n -> pure [PushInt n]
 
-    Constr t n -> pure [PushData t n]
+    Constr t n
+        | n > 0 -> pure [PushData t n]
+        | otherwise ->
+            allocate (GNodeData t []) <&> pure . PushRef
 
     Ident x ->
         pure $ maybe [PushGlobal x] (pure . Push) $ Map.lookup x env
@@ -68,28 +75,14 @@ compileC env = \case
     Ap x y ->
         compileC env y `cnct` compileC (shift 1 env) x `cnct` pure [MkAp]
 
-    Case e alts ->
-        compileE env e `cnct`
-        traverse (compileAlt env) (sortBy (compare `on` pr1) alts) `cnct`
-        pure [Push m, CaseJump, Slide m, Push 1, Unpack, PushN, PushCode]
+    Case e alts -> compileCase env e alts
 
-        where
-        m = length alts
-        pr1 (x, _, _) = x
-        compileAlt env (_, args, expr) =
-            compileC (addLocals args $ shift 2 env) expr >>= storeCode
-            where
-            d = length args
-            storeCode =
-                fmap PushRef . allocate
-                . GNodeFun (fromIntegral d)
-                . (<> [Slide $ d + 2])
 
     Let isRec defs body -> compileLet compileC env isRec defs body
 
 
 compileLet :: Monad m
-    => (Environment -> CoreExpr -> MachineT m [GOp])
+    => Compiler m
     -> Environment
     -> Bool
     -> [(Name, CoreExpr)]
@@ -100,7 +93,6 @@ compileLet compiler env isRec defs body
         traverse (compileDefRec n env') defs' >>= \defsCode ->
         pure ([Alloc n] <> join defsCode) `cnct`
         compiler env' body `cnct` pure [Slide n]
-
 
     | otherwise =
         traverse (compileDef env) defs' >>= \defsCode ->
@@ -120,6 +112,37 @@ compileDefRec :: Monad m => Int -> Environment -> (Int, CoreExpr) -> MachineT m 
 compileDefRec n env (i, def) = compileC env def `cnct` pure [ Update (n-1-i) ]
 
 
+compileCase :: Monad m
+    => Environment
+    -> CoreExpr
+    -> [(Word64, [Name], CoreExpr)]
+    -> MachineT m [GOp]
+compileCase env e alts =
+    compileE env e `cnct`
+    alternatives `cnct`
+    pure ([Push m, CaseJump, Slide m, MkAp] <> closure)
+
+    where
+    m = length alts
+    alternatives = traverse (compileAlt env . pr23) (sortBy (compare `on` Down . pr1) alts)
+    closure = [1..Map.size env] >>= \i -> [Push i, Push 1, MkAp, Slide 1]
+
+    pr1 (x, _, _) = x
+    pr23 (_, x, y) = (x, y)
+
+
+compileAlt :: Monad m => Environment -> ([Name], CoreExpr) -> MachineT m GOp
+compileAlt env (args, expr) =
+    compileC (addLocals args env) expr >>= \code ->
+    let code' = Unpack : code <> [Update evalArity, Pop evalArity, Unwind] in
+    allocate (GNodeFun captureArity code') <&>
+    PushRef
+    where
+    d = length args
+    evalArity = d + Map.size env
+    captureArity = fromIntegral $ 1 + Map.size env
+
+
 shift :: Int -> Environment -> Environment
 shift i = fmap (+i)
 
@@ -132,26 +155,39 @@ addLocals args env = envLocal <> shift n env
 
 
 -- | Prepare the starting state of the machine
-initMachine :: Monad m => CoreExpr -> CoreProgram -> m Machine
+initMachine :: CoreExpr -> CoreProgram -> Machine
 initMachine st defs
-    = execStateT init blankMachine
+    = runIdentity $ execStateT init blankMachine
 
     where
+    allDefs = ("main", [], st) : defs
     init =
         traverse install primitives >>
-        traverse compile (("main", [], st) : defs) >>
+        traverse allocateGlobals allDefs >>
+        traverse compile allDefs >>
         pushCode [PushGlobal "main", Unwind]
 
     install (name, argN, code) =
         allocate (GNodeFun argN code) >>= addGlobal name
+
+    allocateGlobals (name, _, _) =
+        allocate GNodeEmpty >>=
+        addGlobal name
+
+    compile (name, args, body) =
+        let f addr = compileSC args body >>= \code ->
+                updateHeap addr (GNodeFun (fromIntegral $ length args) code)
+        in
+        viewGlobal name >>=
+        maybe (return ()) f
 
 
 primitives :: [(Name, Word8, [GOp])]
 primitives = ds <> [ negateC, printC ]
 
     where
-    negateC = ("negate", 1, [Eval, Neg, Update 1, Pop 1, Unwind])
-    printC = ("print", 1, [Eval, Print, Pop 1, Unwind])
+    negateC = ("negate", 1, [Unwind, Neg, Update 1, Pop 1, Unwind])
+    printC = ("print", 1, [Unwind, Print, Pop 1, Unwind])
     ds = uncurry dyadicPrimitive <$> dyadics
 
 
@@ -163,7 +199,7 @@ dyadics =
 
 
 dyadicPrimitive :: Name -> GOp -> (Name, Word8, [GOp])
-dyadicPrimitive name op = (name, 2, [Eval, Push 1, Eval, Push 1, op, Update 2, Pop 2, Unwind])
+dyadicPrimitive name op = (name, 2, [Unwind, Push 1, Unwind, Push 1, op, Slide 2, Update 2, Pop 2, Unwind])
 
 
 cnct :: (Applicative f, Monoid a) => f a -> f a -> f a

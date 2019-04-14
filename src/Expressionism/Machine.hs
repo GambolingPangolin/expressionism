@@ -4,6 +4,7 @@ module Expressionism.Machine where
 
 import           Control.Monad.Trans.State (StateT (..), get, modify, put)
 import           Data.Bifunctor            (second)
+import           Data.Functor              ((<&>))
 import           Data.List                 (intercalate)
 import           Data.Map.Strict           (Map)
 import qualified Data.Map.Strict           as Map
@@ -17,7 +18,6 @@ import           Expressionism             (Name)
 data GraphOp a
     = Slide Int
     | Unwind
-    | Eval
     | Update Int
     | Alloc Int
 
@@ -96,7 +96,6 @@ data Machine
     = Machine
     { machineCode    :: [GOp]
     , machineStack   :: Stack
-    , machineFreezer :: [([GOp], Stack)]
     , machineHeap    :: Heap
     , machineGlobals :: Map Name Addr
     , machineOutput  :: String
@@ -106,7 +105,6 @@ instance Show Machine where
     show m = intercalate "\n"
         [ "Code: " <> show (machineCode m)
         , "Stack: " <> show (machineStack m)
-        , "Freezer:\n\t" <> showFreezer (machineFreezer m)
         , "Heap: \t" <> showHeap (machineHeap m)
         , "Globals: " <> show (machineGlobals m)
         , "Output: " <> show (machineOutput m)
@@ -118,18 +116,11 @@ showHeap (_, h) = intercalate "\n\t" $ showItem <$> Map.toList h
     showItem (a, n) = show a <> " ~> " <> show n
 
 
-showFreezer :: [([GOp], Stack)] -> String
-showFreezer = intercalate "\n\n\t" . fmap showItem
-    where
-    showItem (c, s) = show c <> "\n\t" <> show s
-
-
 blankMachine :: Machine
 blankMachine =
     Machine
     { machineCode = []
     , machineStack = []
-    , machineFreezer = []
     , machineHeap = emptyHeap
     , machineGlobals = Map.empty
     , machineOutput = ""
@@ -179,6 +170,10 @@ updateHeap a n =
     modify $ \m -> m { machineHeap = f (machineHeap m) }
 
 
+viewGlobal :: Monad m => Name -> MachineT m (Maybe Addr)
+viewGlobal name = get <&> Map.lookup name . machineGlobals
+
+
 addGlobal :: Monad m => Name -> Addr -> MachineT m ()
 addGlobal name addr = modify $ \m ->
     m { machineGlobals = Map.insert name addr $ machineGlobals m }
@@ -201,4 +196,5 @@ data MachineError
     | NoInstructions
     | StackUnderflow
     | BadPointer
+    | BadState
     deriving (Eq, Show)

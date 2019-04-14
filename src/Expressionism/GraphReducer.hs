@@ -42,15 +42,15 @@ unwind :: Monad m => ExecT m ()
 unwind = lift get >>= \m ->
     case machineStack m of
         s@(a : as) -> case Map.lookup a . snd $ machineHeap m of
-            Just (GNodeNum _) -> onPrimitive
+            Just (GNodeNum _) -> return ()
 
-            Just (GNodeData _ _) -> onPrimitive
+            Just (GNodeData _ _) -> return ()
 
             Just (GNodeAp a1 _) -> lift $ pushAddr a1 >> pushCode [Unwind]
 
             Just (GNodeFun i code) -> appHead i (Left code)
-            Just (GNodeConstr i t) -> appHead i (Right t)
 
+            Just (GNodeConstr i t) -> appHead i (Right t)
 
             Just (GNodeInd a') ->
                 lift $
@@ -58,30 +58,7 @@ unwind = lift get >>= \m ->
                     modify (\m -> m { machineStack = a' : as })
 
             where
-            onPrimitive
-                | (ops', s') : ss <- machineFreezer m
-                = lift . put $ m { machineCode = ops'
-                                 , machineStack = last s : s'
-                                 , machineFreezer = ss
-                                 }
-                | otherwise = lift $ setCode []
-
             appHead i body
-                | null as
-                , (ops', s') : f <- machineFreezer m
-                = lift $
-                    setCode ([Unwind] <> ops') >>
-                    modify (\m -> m { machineStack = a : s', machineFreezer = f })
-
-
-                | length as < fromIntegral i
-                , (ops', s') : f <- machineFreezer m
-                = lift $
-                    pushCode ops' >>
-                    modify (\m -> m { machineStack = last as : s'
-                                    , machineFreezer = f }
-                            )
-
                 | length as < fromIntegral i
                 = throwE MissingArguments
 
@@ -104,17 +81,6 @@ unwind = lift get >>= \m ->
                     _                   -> throwE BadPointer
 
 
-        _ -> throwE StackUnderflow
-
-
-eval :: Monad m => ExecT m ()
-eval = lift get >>= \m ->
-    case machineStack m of
-        a : as ->
-            lift . put $ m { machineCode = [Unwind]
-                           , machineStack = [a]
-                           , machineFreezer = (machineCode m, as) : machineFreezer m
-                           }
         _ -> throwE StackUnderflow
 
 
@@ -155,15 +121,14 @@ caseJump = lift get >>= inner
         | otherwise = throwE BadPointer
 
 
-unpack :: Monad m => ExecT m Addr
+unpack :: Monad m => ExecT m ()
 unpack = lift get >>= inner
     where
     inner m
         | a : as <- machineStack m
         , Just (GNodeData _ xs) <- viewHeap m a
         = lift $
-            modify (\m -> m { machineStack = reverse xs <> as }) >>
-            boxNode (GNodeNum $ length xs)
+            modify (\m -> m { machineStack = reverse xs <> as })
 
         | otherwise
         = throwE BadPointer
@@ -298,12 +263,11 @@ machineStep = lift popInstruction >>= maybe checkResult (nothing . inner)
 
         Slide n -> slide n
         Unwind -> unwind
-        Eval -> eval
 
         Alloc n -> void $ alloc n
         Update n -> update n
         Pack t n -> void $ pack t n
-        Unpack -> void unpack
+        Unpack -> unpack
 
         CaseJump -> caseJump
 

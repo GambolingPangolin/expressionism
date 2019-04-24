@@ -25,6 +25,7 @@ library
     Expressionism.Church
     Expressionism.Compiler
     Expressionism.GraphReducer
+    Expressionism.List
     Expressionism.Machine
 
   build-depends:

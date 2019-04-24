@@ -14,7 +14,7 @@ import qualified Expressionism.Arithmetic   as A
 import qualified Expressionism.Bool         as B
 import           Expressionism.Compiler     (initMachine)
 import           Expressionism.GraphReducer (machineStep, runExecT)
-import           Expressionism.List         (coreReverse, toCoreList)
+import qualified Expressionism.List         as L
 import           Expressionism.Machine      (GNode, GraphNode (..),
                                              MachineError)
 
@@ -26,15 +26,20 @@ main = defaultMain $ testGroup "tests" [preludeTests, boolTests, arithTests]
 runMachine x y =
     fmap last
     . runIdentity
-    . runExecT (replicateM 200 machineStep)
+    . runExecT (replicateM 2000 machineStep)
     $ initMachine x y
 
 runMachine0 = flip runMachine preludeDefs
+runMachineList = flip runMachine $ [L.coreReverse, L.coreTake, L.coreSum] <> preludeDefs
 runMachineBool = flip runMachine B.preludeBool
 
 
 retVal :: Int -> Either MachineError (Maybe GNode)
 retVal i = Right . Just $ GNodeNum i
+
+
+coreTrue :: GNode
+coreTrue = GNodeData 1 []
 
 
 preludeTests :: TestTree
@@ -58,7 +63,7 @@ preludeTests = testGroup "prelude"
     , testCase "primitives" $ do
         runMachine0 primProgramA @?= retVal 7
         runMachine0 primProgramB @?= retVal 6
-        runMachine0 primProgramC @?= retVal 1
+        runMachine0 primProgramC @?= Right (Just coreTrue)
 
     , testCase "case" $ do
         runMachine0 caseProgram @?= retVal 3
@@ -71,6 +76,11 @@ preludeTests = testGroup "prelude"
         runMachine0 lamProgram @?= retVal 1
         runMachine0 lamProgram2 @?= retVal 10
         runMachine0 lamProgram3 @?= retVal 13
+
+    , testCase "lists" $ do
+        runMachineList listProgramA @?= retVal 15
+        runMachineList listProgramB @?= retVal 6
+        runMachineList listProgramC @?= retVal 12
 
     ]
 
@@ -142,6 +152,12 @@ preludeTests = testGroup "prelude"
                  , ("y", Ident "f" `Ap` Nmbr 1 `Ap` Nmbr 2)
                  ]
         $ Ident "g" `Ap` Ident "f" `Ap` Ident "y"
+
+
+    listProgramA = Ident "sum" `Ap` L.toCoreList [1..5]
+    listProgramB = Ident "sum" `Ap` (Ident "take" `Ap` Nmbr 3 `Ap` L.toCoreList [1..5])
+    listProgramC = Ident "sum" `Ap` (Ident "take" `Ap` Nmbr 3 `Ap` (Ident "reverse" `Ap` L.toCoreList [1..5]))
+
 
 
 boolTests :: TestTree

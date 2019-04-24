@@ -246,7 +246,7 @@ checkResult = lift get >>= inner
 
     inner m
         | [] <- machineCode m
-        , a : _ <- machineStack m
+        , [a] <- machineStack m
         = return $ returnable =<< viewHeap m a
 
         | not . null $ machineCode m
@@ -286,9 +286,9 @@ machineStep = lift popInstruction >>= maybe checkResult (nothing . inner)
         Add -> dyadic (+)
         Sub -> dyadic (-)
         Mul -> dyadic (*)
-        IsLT -> dyadic (\x y -> toInt $ x < y)
-        IsGT -> dyadic (\x y -> toInt $ x > y)
-        IsEQ -> dyadic (\x y -> toInt $ x == y)
+        IsLT -> dyadicComp (<)
+        IsGT -> dyadicComp (>)
+        IsEQ -> dyadicComp (==)
 
         Print -> printOp
 
@@ -312,6 +312,22 @@ dyadic op = lift get >>= void . inner
             | Just (GNodeNum x) <- getNum m a
             , Just (GNodeNum y) <- getNum m b
             -> lift $ boxNode (GNodeNum $ x `op` y)
+
+            | otherwise -> throwE BadPointer
+
+        _ -> throwE StackUnderflow
+
+    getNum m = flip Map.lookup . snd $ machineHeap m
+
+
+dyadicComp :: Monad m => (Int -> Int -> Bool) -> ExecT m ()
+dyadicComp op = lift get >>= void . inner
+    where
+    inner m = case machineStack m of
+        a : b : xs
+            | Just (GNodeNum x) <- getNum m a
+            , Just (GNodeNum y) <- getNum m b
+            -> lift $ boxNode (GNodeData (toInt $ x `op` y) [])
 
             | otherwise -> throwE BadPointer
 

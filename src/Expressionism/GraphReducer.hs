@@ -128,7 +128,7 @@ unpack = lift get >>= inner
         | a : as <- machineStack m
         , Just (GNodeData _ xs) <- viewHeap m a
         = lift $
-            modify (\m -> m { machineStack = reverse xs <> as })
+            modify (\m -> m { machineStack = xs <> as })
 
         | otherwise
         = throwE BadPointer

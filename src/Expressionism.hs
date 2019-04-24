@@ -20,7 +20,7 @@ import           Data.Word   (Word64, Word8)
 
 
 newtype Name = Name { unName :: Text }
-    deriving (Eq, Ord, IsString)
+    deriving (Eq, Ord, IsString, Semigroup, Monoid)
 
 instance Show Name where
     show = show . unName
@@ -73,7 +73,7 @@ pretty (Nmbr n) = T.pack $ show n
 pretty (Constr t i) = T.pack $ "Pack{" <> show t <> "," <> show i <> "}"
 pretty (Ap e1 e2) = "(" <> pretty e1 <> " " <> pretty e2 <> ")"
 pretty (Let isRec defs body) =
-    bool "let" "letrec" isRec <> " " <> T.intercalate "; " (prettyDef <$> defs) <> "in " <> pretty body
+    bool "let" "letrec" isRec <> " " <> T.intercalate "; " (prettyDef <$> defs) <> " in " <> pretty body
     where
     prettyDef (Name x, y) = x <> " = " <> pretty y
 pretty (Case x branches) =

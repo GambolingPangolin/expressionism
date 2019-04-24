@@ -1,11 +1,15 @@
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeApplications  #-}
 
 module Expressionism.Compiler where
 
 import           Control.Monad             (join, void)
 import           Control.Monad.Trans.State (StateT, evalStateT, execStateT, get,
                                             modify, put)
+import           Crypto.Hash               (SHA256, hash)
+import           Data.ByteString           (ByteString)
+import qualified Data.ByteString.Char8     as BS8
 import           Data.Function             (on)
 import           Data.Functor              ((<&>))
 import           Data.Functor.Identity     (runIdentity)
@@ -70,15 +74,16 @@ compileC env = \case
             allocate (GNodeData t []) <&> pure . PushRef
 
     Ident x ->
-        pure $ maybe [PushGlobal x] (pure . Push) $ Map.lookup x env
+        pure $ maybe [PushGlobal (toGlobal x)] (pure . Push) $ Map.lookup x env
 
     Ap x y ->
         compileC env y `cnct` compileC (shift 1 env) x `cnct` pure [MkAp]
 
     Case e alts -> compileCase env e alts
 
-
     Let isRec defs body -> compileLet compileC env isRec defs body
+
+    Lam args body -> compileLam env args body
 
 
 compileLet :: Monad m
@@ -100,7 +105,7 @@ compileLet compiler env isRec defs body
 
     where
     n = length defs
-    defs' = zip [0..] $ snd <$> defs
+    defs' = zip [0..] . reverse $ snd <$> defs
     env' = addLocals (fst <$> defs) env
 
 
@@ -120,12 +125,12 @@ compileCase :: Monad m
 compileCase env e alts =
     compileE env e `cnct`
     alternatives `cnct`
-    pure ([Push m, CaseJump, Slide m, MkAp] <> closure)
+    pure ([Push m, CaseJump, Slide m, MkAp] <> closure d)
 
     where
     m = length alts
+    d = Map.size env
     alternatives = traverse (compileAlt env . pr23) (sortBy (compare `on` Down . pr1) alts)
-    closure = [1..Map.size env] >>= \i -> [Push i, Push 1, MkAp, Slide 1]
 
     pr1 (x, _, _) = x
     pr23 (_, x, y) = (x, y)
@@ -143,6 +148,25 @@ compileAlt env (args, expr) =
     captureArity = fromIntegral $ 1 + Map.size env
 
 
+compileLam :: Monad m => Environment -> [Name] -> CoreExpr -> MachineT m [GOp]
+compileLam env args body =
+    compileC (addLocalsBefore args env) body >>= \code ->
+    let code' = code <> [Update arity, Pop arity, Unwind] in
+    allocate (GNodeFun (fromIntegral arity) code') >>=
+    addGlobal name >>
+    pure ([PushGlobal name] <> closure d)
+    where
+    d = Map.size env
+    name =
+        fromString
+        . show
+        . hash @ByteString @SHA256
+        . BS8.pack
+        . show
+        $ (env, args, body)
+    arity = Map.size env + length args
+
+
 shift :: Int -> Environment -> Environment
 shift i = fmap (+i)
 
@@ -151,7 +175,18 @@ addLocals :: [Name] -> Environment -> Environment
 addLocals args env = envLocal <> shift n env
     where
     n = length args
-    envLocal = Map.fromList $ zip [1..] args <&> \(i, name) -> (name, n - i)
+    envLocal = Map.fromList $ zip args [0..]
+
+
+addLocalsBefore :: [Name] -> Environment -> Environment
+addLocalsBefore args env = envLocal <> env
+    where
+    d = Map.size env
+    envLocal = Map.fromList $ zip args [d..]
+
+
+closure :: Int -> [GOp]
+closure d = [1..d] >>= \i -> [Push i, Push 1, MkAp, Slide 1]
 
 
 -- | Prepare the starting state of the machine
@@ -165,20 +200,20 @@ initMachine st defs
         traverse install primitives >>
         traverse allocateGlobals allDefs >>
         traverse compile allDefs >>
-        pushCode [PushGlobal "main", Unwind]
+        pushCode [PushGlobal "global.main", Unwind]
 
     install (name, argN, code) =
-        allocate (GNodeFun argN code) >>= addGlobal name
+        allocate (GNodeFun argN code) >>= addGlobal (toGlobal name)
 
     allocateGlobals (name, _, _) =
         allocate GNodeEmpty >>=
-        addGlobal name
+        addGlobal (toGlobal name)
 
     compile (name, args, body) =
         let f addr = compileSC args body >>= \code ->
                 updateHeap addr (GNodeFun (fromIntegral $ length args) code)
         in
-        viewGlobal name >>=
+        viewGlobal (toGlobal name) >>=
         maybe (return ()) f
 
 
@@ -204,3 +239,7 @@ dyadicPrimitive name op = (name, 2, [Unwind, Push 1, Unwind, Push 1, op, Slide 2
 
 cnct :: (Applicative f, Monoid a) => f a -> f a -> f a
 cnct x y = (<>) <$> x <*> y
+
+
+toGlobal :: Name -> Name
+toGlobal x = "global." <> x

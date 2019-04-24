@@ -14,6 +14,7 @@ import qualified Expressionism.Arithmetic   as A
 import qualified Expressionism.Bool         as B
 import           Expressionism.Compiler     (initMachine)
 import           Expressionism.GraphReducer (machineStep, runExecT)
+import           Expressionism.List         (coreReverse, toCoreList)
 import           Expressionism.Machine      (GNode, GraphNode (..),
                                              MachineError)
 
@@ -25,7 +26,7 @@ main = defaultMain $ testGroup "tests" [preludeTests, boolTests, arithTests]
 runMachine x y =
     fmap last
     . runIdentity
-    . runExecT (replicateM 100 machineStep)
+    . runExecT (replicateM 200 machineStep)
     $ initMachine x y
 
 runMachine0 = flip runMachine preludeDefs
@@ -65,6 +66,11 @@ preludeTests = testGroup "prelude"
 
     , testCase "bool" $
         runMachine0 boolProgram @?= retVal 100
+
+    , testCase "lambdas" $ do
+        runMachine0 lamProgram @?= retVal 1
+        runMachine0 lamProgram2 @?= retVal 10
+        runMachine0 lamProgram3 @?= retVal 13
 
     ]
 
@@ -114,6 +120,28 @@ preludeTests = testGroup "prelude"
 
     boolProgram = Ident "if" `Ap` Ident "true" `Ap` Nmbr 100 `Ap` Nmbr 0
 
+    -- (\x -> x) 1
+    lamProgram = Lam ["x"] (Ident "x") `Ap` Nmbr 1
+
+    -- let x = \y -> + y 1
+    --     u = 9
+    -- in x u
+    lamProgram2 =
+        Let False [ ("x", Lam ["y"] $ Ident "+" `Ap` Ident "y" `Ap` Nmbr 1)
+                  , ("u", Nmbr 9)
+                  ]
+        $ Ident "x" `Ap` Ident "u"
+
+    -- letrec f = \x y -> + x (* 2 y)
+    --        g = \f z -> f 3 z
+    --        y = f 1 2
+    -- in g f y
+    lamProgram3 =
+        Let True [ ("f", Lam ["x", "y"] $ Ident "+" `Ap` Ident "x" `Ap` (Ident "*" `Ap` Nmbr 2 `Ap` Ident "y"))
+                 , ("g", Lam ["f", "z"] $ Ident "f" `Ap` Nmbr 3 `Ap` Ident "z")
+                 , ("y", Ident "f" `Ap` Nmbr 1 `Ap` Nmbr 2)
+                 ]
+        $ Ident "g" `Ap` Ident "f" `Ap` Ident "y"
 
 
 boolTests :: TestTree

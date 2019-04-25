@@ -5,22 +5,28 @@ import           Control.Monad.Trans.Class  (lift)
 import           Control.Monad.Trans.Except (runExceptT)
 import           Control.Monad.Trans.State  (evalStateT)
 import           Data.Functor.Identity      (runIdentity)
+import qualified Data.Text                  as T
 import           Test.Tasty
 import           Test.Tasty.HUnit           (testCase, (@?=))
 
-import           Expressionism              (Expr (..), Name, preludeDefs)
+import           Expressionism              (Expr (..), Name, preludeDefs,
+                                             pretty)
 import           Expressionism.Arithmetic   (AExpr (..))
 import qualified Expressionism.Arithmetic   as A
 import qualified Expressionism.Bool         as B
 import           Expressionism.Compiler     (initMachine)
 import           Expressionism.GraphReducer (machineStep, runExecT)
+import           Expressionism.Lexer        (scanTokens)
 import qualified Expressionism.List         as L
 import           Expressionism.Machine      (GNode, GraphNode (..),
                                              MachineError)
+import           Expressionism.Parser       (parseExpression)
+
+import           Test.Snippets
 
 
 main :: IO ()
-main = defaultMain $ testGroup "tests" [preludeTests, boolTests, arithTests]
+main = defaultMain $ testGroup "tests" [preludeTests, boolTests, arithTests, parsingTests]
 
 
 runMachine x y =
@@ -28,6 +34,7 @@ runMachine x y =
     . runIdentity
     . runExecT (replicateM 2000 machineStep)
     $ initMachine x y
+
 
 runMachine0 = flip runMachine preludeDefs
 runMachineList = flip runMachine $ [L.coreReverse, L.coreTake, L.coreSum] <> preludeDefs
@@ -84,81 +91,6 @@ preludeTests = testGroup "prelude"
 
     ]
 
-    where
-
-    -- let x = K 1 2 in K x 3
-    letProgramA = Let False [("x", Ap (Ap (Ident "K") (Nmbr 1)) (Nmbr 2))] $
-        Ap (Ap (Ident "K") (Ident "x")) (Nmbr 3)
-
-    -- let x = K 1 2 in let y = K x 4 in K1 5 y
-    letProgramB =
-        Let False [("x", (Ident "K" `Ap` Nmbr 1) `Ap` Nmbr 2)]
-        . Let False [("y", (Ident "K" `Ap` Ident "x") `Ap` Nmbr 4)]
-        $ (Ident "K1" `Ap` Nmbr 5) `Ap` Ident "y"
-
-    -- letrec x = K 1 y
-    --        y = K x
-    -- in y 2
-    letRecProgram =
-        Let True [ ("x", (Ident "K" `Ap` Nmbr 1) `Ap` Ident "y")
-                 , ("y", Ident "K" `Ap` Ident "x")
-                 ]
-        $ Ident "y" `Ap` Nmbr 2
-
-    -- + 3 4
-    primProgramA = Ident "+" `Ap` Nmbr 3 `Ap` Nmbr 4
-
-    -- let x = + 1 2 in + x 3
-    primProgramB =
-        Let False [("x", Ident "+" `Ap` Nmbr 1 `Ap` Nmbr 2)]
-        $ Ident "+" `Ap` Ident "x" `Ap` Nmbr 3
-
-    -- > 3 0
-    primProgramC = Ident ">" `Ap` Nmbr 3 `Ap` Nmbr 0
-
-    caseProgram = Case (Constr 0 1 `Ap` Nmbr 3)
-        [ (0, ["x"], Ident "x")
-        , (1, ["y"], Ident "y")
-        ]
-
-    caseProgram2 = Let False [("z", caseProgram)] $
-        Case (Constr 1 2 `Ap` Nmbr 10 `Ap` Nmbr 11)
-        [ (0, [], Nmbr 101)
-        , (1, ["x", "y"], Ident "+" `Ap` Ident "x" `Ap` Ident "z")
-        , (2, ["x"], Ident "*" `Ap` Ident "x" `Ap` Ident "x")
-        ]
-
-    boolProgram = Ident "if" `Ap` Ident "true" `Ap` Nmbr 100 `Ap` Nmbr 0
-
-    -- (\x -> x) 1
-    lamProgram = Lam ["x"] (Ident "x") `Ap` Nmbr 1
-
-    -- let x = \y -> + y 1
-    --     u = 9
-    -- in x u
-    lamProgram2 =
-        Let False [ ("x", Lam ["y"] $ Ident "+" `Ap` Ident "y" `Ap` Nmbr 1)
-                  , ("u", Nmbr 9)
-                  ]
-        $ Ident "x" `Ap` Ident "u"
-
-    -- letrec f = \x y -> + x (* 2 y)
-    --        g = \f z -> f 3 z
-    --        y = f 1 2
-    -- in g f y
-    lamProgram3 =
-        Let True [ ("f", Lam ["x", "y"] $ Ident "+" `Ap` Ident "x" `Ap` (Ident "*" `Ap` Nmbr 2 `Ap` Ident "y"))
-                 , ("g", Lam ["f", "z"] $ Ident "f" `Ap` Nmbr 3 `Ap` Ident "z")
-                 , ("y", Ident "f" `Ap` Nmbr 1 `Ap` Nmbr 2)
-                 ]
-        $ Ident "g" `Ap` Ident "f" `Ap` Ident "y"
-
-
-    listProgramA = Ident "sum" `Ap` L.toCoreList [1..5]
-    listProgramB = Ident "sum" `Ap` (Ident "take" `Ap` Nmbr 3 `Ap` L.toCoreList [1..5])
-    listProgramC = Ident "sum" `Ap` (Ident "take" `Ap` Nmbr 3 `Ap` (Ident "reverse" `Ap` L.toCoreList [1..5]))
-
-
 
 boolTests :: TestTree
 boolTests = testGroup "bool"
@@ -195,3 +127,28 @@ arithTests = testGroup "arithmetic"
         ALet "x" (ANum 3 `APlus` ANum 1) $
         ALet "y" (ANum 4 `AMult` AIdent "x") $
         AIdent "y" `APlus` ANum 10
+
+
+parsingTests :: TestTree
+parsingTests = testGroup "parsing"
+    [ testCase "example A" $
+        parse sourceA @?= treeA
+
+    , testCase "example B" $
+        parse sourceB @?= treeB
+
+    , testCase "example C" $
+        parse sourceC @?= treeC
+
+    ]
+
+    where
+
+    parse = parseExpression . scanTokens
+
+    sourceA = "f x y = { + x y }"
+    treeA = [("f", ["x", "y"], Ident "+" `Ap` Ident "x" `Ap` Ident "y")]
+    sourceB = "f x y = { let z = * 3 x in case y of C_0 u -> z; C_1 v -> + v z }"
+    treeB = [("f", ["x", "y"], Let False [("z", Ident "*" `Ap` Nmbr 3 `Ap` Ident "x")] $ Case (Ident "y") [(0, ["u"], Ident "z"), (1, ["v"], Ident "+" `Ap` Ident "v" `Ap` Ident "z")])]
+    sourceC = T.unpack $ "f = { " <> pretty lamProgram <> "}"
+    treeC = [("f", [], lamProgram)]

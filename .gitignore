@@ -2,3 +2,7 @@ dist/
 dist-newstyle/
 tags
 *.swp
+
+# Generated modules
+Lexer.hs
+Parser.hs

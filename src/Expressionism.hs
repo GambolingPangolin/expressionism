@@ -71,7 +71,7 @@ pretty :: Expr Name -> Text
 pretty (Ident a) = unName a
 pretty (Nmbr n) = T.pack $ show n
 pretty (Constr t i) = T.pack $ "Pack{" <> show t <> "," <> show i <> "}"
-pretty (Ap e1 e2) = "(" <> pretty e1 <> " " <> pretty e2 <> ")"
+pretty (Ap e1 e2) = "(" <> pretty e1 <> ") " <> pretty e2
 pretty (Let isRec defs body) =
     bool "let" "letrec" isRec <> " " <> T.intercalate "; " (prettyDef <$> defs) <> " in " <> pretty body
     where
@@ -83,7 +83,7 @@ pretty (Case x branches) =
         "{" <> T.pack (show ix) <> "} " <> T.intercalate " " (unName <$> vars)
         <> " -> " <> pretty body
 pretty (Lam vars body) =
-    "λ " <> T.intercalate " " (unName <$> vars) <> ". " <> pretty body
+    "\\" <> T.intercalate " " (unName <$> vars) <> ". " <> pretty body
 
 
 printProgram :: CoreProgram -> Text
